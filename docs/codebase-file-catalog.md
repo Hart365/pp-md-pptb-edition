@@ -1,4 +1,4 @@
-# PP-MD File Catalog and Naming Review
+# PP-MD - PPTB Edition File Catalog and Naming Review
 
 ## Purpose
 This document lists the application code and resource files, explains their responsibilities, and reviews naming clarity.

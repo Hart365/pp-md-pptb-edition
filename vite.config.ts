@@ -1,5 +1,5 @@
 /**
- * Vite configuration for PP-MD (Power Platform Markdown Documentation Generator).
+ * Vite configuration for PP-MD - PPTB Edition (Power Platform Markdown Documentation Generator).
  * Uses the official Vite React plugin for JSX/TSX transform support.
  */
 import { defineConfig } from 'vite';

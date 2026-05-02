@@ -98,14 +98,20 @@ export function findMatchingAsset(
   if (platform === 'windows') {
     const archSuffix = arch === 'arm64' ? 'arm64' : 'x64';
     const typeSuffix = installType === 'portable' ? 'portable' : 'installer';
-    patterns = [`PP-MD-*-${archSuffix}-${typeSuffix}.exe`];
+    patterns = [`PP-MD-PPTB-Edition-*-${archSuffix}-${typeSuffix}.exe`];
   } else if (platform === 'linux') {
     const archSuffix = arch === 'arm64' ? 'arm64' : 'x64';
-    patterns = [`PP-MD-*-${archSuffix}.AppImage`, `PP-MD-*.AppImage`];
+    patterns = [
+      `PP-MD-PPTB-Edition-*-${archSuffix}.AppImage`,
+      `PP-MD-PPTB-Edition-*.AppImage`,
+    ];
   } else if (platform === 'macos') {
     const archSuffix = arch === 'arm64' ? 'arm64' : 'x64';
     const ext = installType === 'portable' ? 'mac.zip' : 'dmg';
-    patterns = [`PP-MD-*-${archSuffix}-${ext}`, `PP-MD-*-${ext}`];
+    patterns = [
+      `PP-MD-PPTB-Edition-*-${archSuffix}-${ext}`,
+      `PP-MD-PPTB-Edition-*-${ext}`,
+    ];
   }
 
   // Try to find a matching asset

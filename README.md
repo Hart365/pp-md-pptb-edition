@@ -1,6 +1,6 @@
-# PP-MD — Power Platform Solution Documenter
+# PP-MD - PPTB Edition — Power Platform Solution Documenter
 
-PP-MD is a Windows desktop application that turns Microsoft Power Platform solution ZIP exports into structured, portable Markdown documentation — with Mermaid diagrams included. No server, no cloud upload, no licence key required.
+PP-MD - PPTB Edition is a Windows desktop application that turns Microsoft Power Platform solution ZIP exports into structured, portable Markdown documentation — with Mermaid diagrams included. No server, no cloud upload, no licence key required.
 
 ---
 
@@ -28,7 +28,7 @@ PP-MD is a Windows desktop application that turns Microsoft Power Platform solut
 
 When you export a solution from Power Platform / Dataverse, you receive a ZIP archive containing XML definitions of every component — tables, columns, relationships, flows, apps, security roles, plugins, and more. Reading that raw XML is slow and error-prone.
 
-PP-MD parses that ZIP entirely on your local machine and produces a single, readable `.md` file that covers:
+PP-MD - PPTB Edition parses that ZIP entirely on your local machine and produces a single, readable `.md` file that covers:
 
 - An auto-generated **Entity Relationship Diagram** (ERD) rendered as a Mermaid diagram
 - Every **Dataverse table** with its columns, data types, and relationships
@@ -71,8 +71,8 @@ Multiple solutions can be loaded at once and reviewed side-by-side, or merged in
 
 | Artifact | Description |
 |---|---|
-| `PP-MD-1.0.0-x64-portable.exe` | Self-contained single executable — no installation required |
-| `PP-MD-1.0.0-x64-installer.exe` | Standard Windows installer with Start Menu shortcut |
+| `PP-MD-PPTB-Edition-1.0.0-x64-portable.exe` | Self-contained single executable — no installation required |
+| `PP-MD-PPTB-Edition-1.0.0-x64-installer.exe` | Standard Windows installer with Start Menu shortcut |
 
 Both require **Windows 10/11 x64**.
 
@@ -89,7 +89,7 @@ Export your solution from Power Platform:
 3. Choose **Unmanaged** or **Managed** (both are supported)
 4. Save the `.zip` file to your machine
 
-In PP-MD, either:
+In PP-MD - PPTB Edition, either:
 - **Drag and drop** one or more `.zip` files onto the drop zone, or
 - Click **Browse** to open a file picker
 
@@ -210,7 +210,7 @@ Build artifacts are written to:
 
 | Folder | Contents |
 |---|---|
-| `release_latest/` | Unpacked Electron runtime (PP-MD.exe + supporting files) |
+| `release_latest/` | Unpacked Electron runtime (PP-MD-PPTB-Edition.exe + supporting files) |
 | `release_latest_portable/` | Self-contained portable `.exe` |
 | `release_latest_installer/` | NSIS installer `.exe` + `.blockmap` |
 

@@ -1,6 +1,6 @@
 /**
  * @file App.tsx
- * @description Root application component for PP-MD.
+ * @description Root application component for PP-MD - PPTB Edition.
  *
  * Application flow:
  *  1. User lands on the drop zone (welcome screen).
@@ -70,8 +70,8 @@ interface ConfigurationFile {
   configurations: SavedDocumentConfiguration[];
 }
 
-const LOCAL_CONFIG_STORAGE_KEY = 'pp-md-doc-configurations';
-const LOCAL_HIDDEN_CONFIG_IDS_KEY = 'pp-md-hidden-doc-configuration-ids';
+const LOCAL_CONFIG_STORAGE_KEY = 'pp-md-pptb-edition-doc-configurations';
+const LOCAL_HIDDEN_CONFIG_IDS_KEY = 'pp-md-pptb-edition-hidden-doc-configuration-ids';
 
 const EMPTY_DOCUMENT_CONTEXT: DocumentContext = {
   client: '',
@@ -526,7 +526,7 @@ export default function App() {
     });
 
     const blob = await zip.generateAsync({ type: 'blob' });
-    saveAs(blob, 'pp-md-markdown-documents.zip');
+    saveAs(blob, 'pp-md-pptb-edition-markdown-documents.zip');
   }, [results]);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
@@ -565,7 +565,7 @@ export default function App() {
           {/* Logo / app name */}
           <div className={styles.brand}>
             <img src={appIcon} className={styles.brandIcon} alt="" aria-hidden="true" />
-            <h1 className={styles.brandName}>PP-MD</h1>
+            <h1 className={styles.brandName}>PP-MD - PPTB Edition</h1>
             <span className={styles.brandTagline}>Power Platform Documentation Generator</span>
           </div>
 
@@ -648,7 +648,7 @@ export default function App() {
               </h2>
               <p className={styles.welcomeSubtitle}>
                 Drop one or more Power Platform solution <code>.zip</code> archives below.
-                PP-MD will parse every component and produce comprehensive Markdown
+                PP-MD - PPTB Edition will parse every component and produce comprehensive Markdown
                 documentation — including architecture and ERD Mermaid diagrams.
               </p>
 
@@ -885,7 +885,7 @@ export default function App() {
       {/* ── Footer ────────────────────────────────────────────────────── */}
       <footer className={styles.footer} role="contentinfo">
         <p>
-          PP-MD: Power Platform Documentation Generator. Created by Mike Hartley - Hart of the Midlands.
+          PP-MD - PPTB Edition: Power Platform Documentation Generator. Created by Mike Hartley - Hart of the Midlands.
           All processing happens locally on your PC; your solution data never leaves your machine.
         </p>
       </footer>

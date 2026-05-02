@@ -1,4 +1,4 @@
-# PP-MD Low-Level Design
+# PP-MD - PPTB Edition Low-Level Design
 
 ## Purpose
 This document details module internals, key functions, data contracts, and implementation-level behavior.

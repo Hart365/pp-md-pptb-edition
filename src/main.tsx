@@ -29,7 +29,7 @@ if (!rootElement) {
    * Throwing gives a clear developer error rather than a silent blank screen.
    */
   throw new Error(
-    'PP-MD: Could not find #root element. Ensure index.html contains <div id="root"></div>.',
+    'PP-MD - PPTB Edition: Could not find #root element. Ensure index.html contains <div id="root"></div>.',
   );
 }
 

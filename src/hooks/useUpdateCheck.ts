@@ -61,7 +61,7 @@ export function useUpdateCheck() {
 
       // Fetch latest release from GitHub
       const response = await fetch(
-        'https://api.github.com/repos/Hart365/PP-MD/releases/latest',
+        'https://api.github.com/repos/Hart365/pp-md-pptb-edition/releases/latest',
         {
           headers: {
             'Accept': 'application/vnd.github+json',

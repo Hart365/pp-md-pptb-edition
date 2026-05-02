@@ -4,7 +4,7 @@ const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
 // Ensure Windows uses our App User Model ID so the taskbar shows the app icon
 // rather than the generic Electron icon.
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.ppmd.desktop');
+  app.setAppUserModelId('com.ppmd.pptb.desktop');
 }
 
 /**
@@ -75,7 +75,7 @@ function setupIpcHandlers() {
 // Ensure Windows uses our App User Model ID so the taskbar shows the app icon
 // rather than the generic Electron icon.
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.ppmd.desktop');
+  app.setAppUserModelId('com.ppmd.pptb.desktop');
 }
 
 function createMainWindow() {
@@ -115,7 +115,7 @@ function createMainWindow() {
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     if (!isDev) {
       dialog.showErrorBox(
-        'PP-MD failed to load',
+        'PP-MD - PPTB Edition failed to load',
         `Could not load application UI.\n\nURL: ${validatedURL}\nError: ${errorCode} - ${errorDescription}`,
       );
     }
@@ -123,7 +123,7 @@ function createMainWindow() {
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (!isDev) {
-      dialog.showErrorBox('PP-MD renderer crashed', `Reason: ${details.reason}`);
+      dialog.showErrorBox('PP-MD - PPTB Edition renderer crashed', `Reason: ${details.reason}`);
     }
   });
 

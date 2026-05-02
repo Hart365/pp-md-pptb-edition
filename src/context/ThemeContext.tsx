@@ -53,7 +53,7 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 // ---------------------------------------------------------------------------
 
 /** localStorage key under which the user's theme preference is stored. */
-const STORAGE_KEY = 'pp-md-theme';
+const STORAGE_KEY = 'pp-md-pptb-edition-theme';
 
 /**
  * Reads the user's stored preference or falls back to the OS setting.

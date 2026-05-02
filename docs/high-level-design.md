@@ -1,7 +1,7 @@
-# PP-MD High-Level Design
+# PP-MD - PPTB Edition High-Level Design
 
 ## Overview
-PP-MD is a Windows desktop documentation generator for Microsoft Power Platform solutions. The application ingests one or more solution ZIP archives, parses Dataverse and solution metadata, and generates human-readable markdown documentation with Mermaid diagrams.
+PP-MD - PPTB Edition is a Windows desktop documentation generator for Microsoft Power Platform solutions. The application ingests one or more solution ZIP archives, parses Dataverse and solution metadata, and generates human-readable markdown documentation with Mermaid diagrams.
 
 ## Goals
 - Convert Power Platform solution content into structured technical documentation.

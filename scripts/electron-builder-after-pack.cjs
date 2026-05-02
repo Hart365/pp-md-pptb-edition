@@ -38,7 +38,7 @@ module.exports = async function afterPack(context) {
     'version-string': {
       CompanyName: 'Hart of the Midlands',
       FileDescription: 'Power Platform solution documentation generator for Windows desktop.',
-      ProductName: 'PP-MD',
+      ProductName: 'PP-MD - PPTB Edition',
       LegalCopyright: 'Copyright (c) Mike Hartley, Hart of the Midlands',
       OriginalFilename: appExeName,
       InternalName: context.packager.appInfo.productFilename,

@@ -64,10 +64,10 @@ if (-not $KeepTemp) {
 }
 
 Write-Host ''
-Write-Host "Latest portable: .\\release_latest_portable\\PP-MD-1.0.0-x64-portable.exe"
-Write-Host "Latest installer: .\\release_latest_installer\\PP-MD-1.0.0-x64-installer.exe"
+Write-Host "Latest portable: .\\release_latest_portable\\PP-MD-PPTB-Edition-1.0.0-x64-portable.exe"
+Write-Host "Latest installer: .\\release_latest_installer\\PP-MD-PPTB-Edition-1.0.0-x64-installer.exe"
 if ($MirrorUnpacked) {
-  Write-Host "Latest unpacked app: .\\release_latest\\PP-MD.exe"
+  Write-Host "Latest unpacked app: .\\release_latest\\PP-MD-PPTB-Edition.exe"
 } else {
   Write-Host 'Latest unpacked app mirror skipped.'
 }
