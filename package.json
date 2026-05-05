@@ -24,8 +24,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
-    "build:with-maps": "tsc && vite build --mode debug",
+    "build": "tsc && vite build && node scripts/normalize-dist-assets.mjs",
+    "build:with-maps": "tsc && vite build --mode debug && node scripts/normalize-dist-assets.mjs",
     "preview": "vite preview",
     "validate": "pptb-validate package.json",
     "validate:offline": "pptb-validate --skip-url-checks package.json",

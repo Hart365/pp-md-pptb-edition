@@ -5,20 +5,14 @@
  */
 
 /// <reference types="vite/client" />
+/// <reference types="@pptb/types" />
 
 /**
- * Electron IPC API exposed to renderer process
+ * Extend the global window object with app-specific properties.
  */
-interface ElectronAPI {
-  invoke: (channel: string, ...args: any[]) => Promise<any>;
-}
-
-/**
- * Extend the global window object to include Electron and app-specific properties
- */
-declare global {
-  interface Window {
-    electron?: ElectronAPI;
-    __PPMD_VERSION__?: string;
-  }
+interface Window {
+  __PPMD_VERSION__?: string;
+  electron?: {
+    invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
+  };
 }

@@ -26,6 +26,8 @@ import type {
   ReportDefinition,
   DashboardDefinition,
   OptionSetDefinition,
+  DataverseCustomApiDefinition,
+  DataverseDependencyEdge,
 } from '../types/solution';
 
 import { ProcessCategory, WebResourceType, AttributeType, AppType } from '../types/solution';
@@ -33,6 +35,12 @@ import { ProcessCategory, WebResourceType, AttributeType, AppType } from '../typ
 export interface MarkdownGenerationOptions {
   erdMode?: 'compact' | 'detailed-relationships';
   documentContext?: DocumentContext;
+  enrichmentIndicators?: EnrichmentIndicators;
+}
+
+export interface EnrichmentIndicators {
+  peerGapFillApplied?: boolean;
+  dataverseMetadataEnriched?: boolean;
 }
 
 export interface DocumentContext {
@@ -475,11 +483,21 @@ export function consolidateSolutions(solutions: ParsedSolution[]): ParsedSolutio
   const reports = mergeByKey(items.flatMap((solution) => solution.reports), (report) => `${report.fileName || ''}|${report.name}`.toLowerCase(), (current, incoming) => ({ ...current, displayName: current.displayName || incoming.displayName, relatedEntities: uniqueStrings([...(current.relatedEntities ?? []), ...(incoming.relatedEntities ?? [])]), category: current.category || incoming.category }));
   const dashboards = mergeByKey(items.flatMap((solution) => solution.dashboards), (dashboard) => (dashboard.name || dashboard.displayName || '').toLowerCase(), (current, incoming) => ({ ...current, displayName: current.displayName || incoming.displayName, entityLogicalName: current.entityLogicalName || incoming.entityLogicalName, dashboardType: current.dashboardType || incoming.dashboardType, components: uniqueStrings([...(current.components ?? []), ...(incoming.components ?? [])]) }));
   const pluginAssemblies = mergeByKey(items.flatMap((solution) => solution.pluginAssemblies), (assembly) => assembly.assemblyName.toLowerCase(), (current, incoming) => ({ ...current, displayName: current.displayName || incoming.displayName, version: current.version || incoming.version, culture: current.culture || incoming.culture, publicKeyToken: current.publicKeyToken || incoming.publicKeyToken, sourceType: current.sourceType || incoming.sourceType, steps: mergeByKey([...current.steps, ...incoming.steps], (step) => `${step.name}|${step.message}|${step.primaryEntity || ''}|${step.stage}|${step.mode}|${step.pluginTypeName}`.toLowerCase(), (first) => first) }));
+  const dataverseCustomApis = mergeByKey(
+    items.flatMap((solution) => solution.dataverseInsights?.customApis ?? []),
+    (api) => (api.uniqueName || api.name).toLowerCase(),
+    (first) => first,
+  );
+  const dataverseDependencies = mergeByKey(
+    items.flatMap((solution) => solution.dataverseInsights?.dependencies ?? []),
+    (dependency) => `${dependency.dependentType}|${dependency.dependentName}|${dependency.requiredType}|${dependency.requiredName}`.toLowerCase(),
+    (first) => first,
+  );
 
   return {
     metadata: {
-      uniqueName: 'consolidated_solutions',
-      displayName: 'Consolidated Solution Summary',
+      uniqueName: 'all_selected_solutions',
+      displayName: 'All Selected Solutions',
       version: new Date().toISOString().slice(0, 10),
       publisherName: 'Multiple Publishers',
       isManaged: false,
@@ -499,7 +517,145 @@ export function consolidateSolutions(solutions: ParsedSolution[]): ParsedSolutio
     reports,
     dashboards,
     pluginAssemblies,
+    dataverseInsights: (dataverseCustomApis.length > 0 || dataverseDependencies.length > 0)
+      ? {
+        customApis: dataverseCustomApis,
+        dependencies: dataverseDependencies,
+      }
+      : undefined,
     warnings: uniqueStrings(items.flatMap((solution) => solution.warnings)),
+  };
+}
+
+function mapByKey<T>(items: T[], keyFn: (item: T) => string): Map<string, T> {
+  return new Map(items.map((item) => [keyFn(item), item]));
+}
+
+function resolveFromMerged<T>(
+  baseItems: T[],
+  mergedItems: T[],
+  keyFn: (item: T) => string,
+): T[] {
+  const mergedByKey = mapByKey(mergedItems, keyFn);
+  return baseItems.map((item) => mergedByKey.get(keyFn(item)) ?? item);
+}
+
+/**
+ * Fills missing values in a single solution using matching components from peer
+ * solutions, without adding new top-level components that are not already
+ * present in the target solution.
+ */
+export function fillSolutionGapsFromPeerSolutions(
+  target: ParsedSolution,
+  peers: ParsedSolution[],
+): ParsedSolution {
+  if (peers.length === 0) return target;
+
+  const merged = consolidateSolutions([target, ...peers]);
+
+  const optionSets = resolveFromMerged(
+    target.optionSets,
+    merged.optionSets,
+    (optionSet) => optionSet.name.toLowerCase(),
+  );
+
+  const forms = resolveFromMerged(
+    target.forms,
+    merged.forms,
+    (form) => `${form.entityLogicalName}|${form.name}|${form.formType}`.toLowerCase(),
+  );
+
+  const views = resolveFromMerged(
+    target.views,
+    merged.views,
+    (view) => `${view.entityLogicalName}|${view.name}|${view.viewType}`.toLowerCase(),
+  );
+
+  const processes = resolveFromMerged(
+    target.processes,
+    merged.processes,
+    (process) => stripTrailingGuid(process.uniqueName || process.displayName || process.name).toLowerCase(),
+  );
+
+  const apps = resolveFromMerged(
+    target.apps,
+    merged.apps,
+    (app) => `${app.appType}|${stripTrailingGuid(app.uniqueName || app.name || app.displayName)}`.toLowerCase(),
+  );
+
+  const webResources = resolveFromMerged(
+    target.webResources,
+    merged.webResources,
+    (item) => (item.schemaName || item.name).toLowerCase(),
+  );
+
+  const securityRoles = resolveFromMerged(
+    target.securityRoles,
+    merged.securityRoles,
+    (role) => role.name.toLowerCase(),
+  );
+
+  const fieldSecurityProfiles = resolveFromMerged(
+    target.fieldSecurityProfiles,
+    merged.fieldSecurityProfiles,
+    (profile) => profile.name.toLowerCase(),
+  );
+
+  const connectionReferences = resolveFromMerged(
+    target.connectionReferences,
+    merged.connectionReferences,
+    (connectionReference) => connectionReference.name.toLowerCase(),
+  );
+
+  const environmentVariables = resolveFromMerged(
+    target.environmentVariables,
+    merged.environmentVariables,
+    (variable) => variable.schemaName.toLowerCase(),
+  );
+
+  const emailTemplates = resolveFromMerged(
+    target.emailTemplates,
+    merged.emailTemplates,
+    (template) => `${template.name}|${template.subject || ''}`.toLowerCase(),
+  );
+
+  const reports = resolveFromMerged(
+    target.reports,
+    merged.reports,
+    (report) => `${report.fileName || ''}|${report.name}`.toLowerCase(),
+  );
+
+  const dashboards = resolveFromMerged(
+    target.dashboards,
+    merged.dashboards,
+    (dashboard) => (dashboard.name || dashboard.displayName || '').toLowerCase(),
+  );
+
+  const pluginAssemblies = resolveFromMerged(
+    target.pluginAssemblies,
+    merged.pluginAssemblies,
+    (assembly) => assembly.assemblyName.toLowerCase(),
+  );
+
+  return {
+    ...target,
+    entities: resolveFromMerged(target.entities, merged.entities, (entity) => entity.logicalName.toLowerCase()),
+    optionSets,
+    forms,
+    views,
+    processes,
+    apps,
+    webResources,
+    securityRoles,
+    fieldSecurityProfiles,
+    connectionReferences,
+    environmentVariables,
+    emailTemplates,
+    reports,
+    dashboards,
+    pluginAssemblies,
+    warnings: uniqueStrings([...(target.warnings ?? []), ...(merged.warnings ?? [])]),
+    dataverseInsights: target.dataverseInsights ?? merged.dataverseInsights,
   };
 }
 
@@ -560,7 +716,30 @@ function generateDocumentContextSection(context: DocumentContext | undefined): s
  * @param solution - Parsed solution data
  * @returns Markdown string for the document header section
  */
-function generateHeader(solution: ParsedSolution, documentContext?: DocumentContext): string {
+function generateEnrichmentLine(indicators?: EnrichmentIndicators): string {
+  if (!indicators) return '';
+
+  const peer = indicators.peerGapFillApplied
+    ? '🔀 **Peer Gap Fill:** Applied _(missing fields were completed using other selected solutions with matching components)_'
+    : '🔀 **Peer Gap Fill:** Not Applied _(missing fields were completed using other selected solutions with matching components)_';
+  const dataverse = indicators.dataverseMetadataEnriched
+    ? '☁️ **Dataverse Metadata Enrichment:** Applied _(additional metadata was pulled directly from Dataverse metadata endpoints)_'
+    : '☁️ **Dataverse Metadata Enrichment:** Not Applied _(additional metadata was pulled directly from Dataverse metadata endpoints)_';
+
+  // Keep each indicator on a separate rendered line in markdown blockquotes.
+  return `> ${peer}\n>\n> ${dataverse}`;
+}
+
+function generateEnrichmentLegend(indicators?: EnrichmentIndicators): string[] {
+  if (!indicators) return [];
+  return [];
+}
+
+function generateHeader(
+  solution: ParsedSolution,
+  documentContext?: DocumentContext,
+  indicators?: EnrichmentIndicators,
+): string {
   const { metadata } = solution;
   const lines: string[] = [];
 
@@ -574,6 +753,16 @@ function generateHeader(solution: ParsedSolution, documentContext?: DocumentCont
     '',
     `> **Generated by PP-MD - PPTB Edition** — Power Platform Documentation Generator`,
     `> Generated on: ${new Date().toLocaleString()}`,
+  );
+
+  const enrichmentLine = generateEnrichmentLine(indicators);
+  if (enrichmentLine) {
+    lines.push('');
+    lines.push(enrichmentLine);
+    lines.push(...generateEnrichmentLegend(indicators));
+  }
+
+  lines.push(
     '',
     heading(2, 'Solution Overview'),
     '',
@@ -605,6 +794,7 @@ function generateHeader(solution: ParsedSolution, documentContext?: DocumentCont
 function generateTableOfContents(solution: ParsedSolution): string {
   const lines: string[] = [heading(2, 'Table of Contents'), ''];
   const documentedApps = solution.apps.filter(isDocumentedApp);
+  const dataverseInsightsCount = solution.dataverseInsights ? 1 : 0;
 
   const sections: Array<{ label: string; count: number }> = [
     { label: 'Entity Relationship Diagram',    count: solution.entities.length },
@@ -621,6 +811,7 @@ function generateTableOfContents(solution: ParsedSolution): string {
     { label: 'Email Templates',                count: solution.emailTemplates.length },
     { label: 'Reports & Dashboards',           count: solution.reports.length + solution.dashboards.length },
     { label: 'Plugin Assemblies & Steps',      count: solution.pluginAssemblies.length },
+    { label: 'Dataverse Deep Insights',        count: dataverseInsightsCount },
   ];
 
   sections.forEach(({ label, count }) => {
@@ -658,8 +849,11 @@ function generateERD(
   ];
 
   const mode = options.erdMode ?? 'detailed-relationships';
-  const includedNames = new Set(entities.map((e) => e.logicalName.toLowerCase()));
-  const entityMap = new Map(entities.map((entity) => [entity.logicalName.toLowerCase(), entity]));
+  // Only plot entities that are genuinely part of the solution – exclude any
+  // that were appended purely as cross-solution reference context.
+  const solutionEntities = entities.filter((e) => !e.enrichedFromDataverse);
+  const includedNames = new Set(solutionEntities.map((e) => e.logicalName.toLowerCase()));
+  const entityMap = new Map(solutionEntities.map((entity) => [entity.logicalName.toLowerCase(), entity]));
 
   interface ErRelationship {
     from: string;
@@ -676,7 +870,7 @@ function generateERD(
     degree.set(name, (degree.get(name) ?? 0) + 1);
   };
 
-  entities.forEach((entity) => {
+  solutionEntities.forEach((entity) => {
     entity.relationships.forEach((rel) => {
       const referenced = rel.referencedEntity.toLowerCase();
       const referencing = rel.referencingEntity.toLowerCase();
@@ -1693,6 +1887,317 @@ function generatePluginsSection(assemblies: PluginAssemblyDefinition[]): string 
 }
 
 // ---------------------------------------------------------------------------
+// Dataverse deep insights
+// ---------------------------------------------------------------------------
+
+function generateDataverseInsightsSection(
+  solution: ParsedSolution,
+  entityMap: Map<string, string>,
+): string {
+  if (!solution.dataverseInsights) return '';
+
+  const lines: string[] = [heading(2, 'Dataverse Deep Insights'), ''];
+  const customApis = sortByLabel(solution.dataverseInsights.customApis ?? [], (api) => api.displayName || api.uniqueName);
+  const dependencies: DataverseDependencyEdge[] = solution.dataverseInsights.dependencies ?? [];
+
+  const matchFlowValues = (flow: object | undefined, candidates: string[]) => {
+    if (!flow || candidates.length === 0) return [];
+    const body = JSON.stringify(flow).toLowerCase();
+    return Array.from(new Set(candidates.filter((candidate) => body.includes(candidate.toLowerCase()))));
+  };
+
+  const processActions = sortByLabel(
+    solution.processes.filter((process) => process.category === ProcessCategory.Action || process.category === ProcessCategory.CustomAction),
+    (process) => processTitle(process),
+  );
+
+  lines.push(heading(3, 'Custom APIs, Actions, and Functions'));
+  lines.push('');
+  lines.push(`- Custom APIs discovered: **${customApis.length}**`);
+  lines.push(`- Custom Action processes discovered: **${processActions.length}**`);
+  lines.push('');
+
+  if (customApis.length > 0) {
+    lines.push('| Name | Unique Name | Type | Binding | Visibility | Processing Step Type | Description |');
+    lines.push('|------|-------------|------|---------|------------|----------------------|-------------|');
+    customApis.forEach((api: DataverseCustomApiDefinition) => {
+      lines.push(
+        `| ${mdEscape(api.displayName || api.name || api.uniqueName)} ` +
+        `| \`${mdEscape(api.uniqueName)}\` ` +
+        `| ${api.isFunction ? 'Function' : 'Action'} ` +
+        `| ${mdEscape(api.bindingType) || 'Global'} ` +
+        `| ${api.isPrivate ? 'Private' : 'Public'} ` +
+        `| ${mdEscape(api.allowedCustomProcessingStepType) || '–'} ` +
+        `| ${mdEscape(api.description) || '–'} |`,
+      );
+    });
+    lines.push('');
+  }
+
+  if (processActions.length > 0) {
+    lines.push('| Process | Unique Name | Primary Table | Status |');
+    lines.push('|---------|-------------|---------------|--------|');
+    processActions.forEach((process) => {
+      lines.push(
+        `| ${mdEscape(processTitle(process))} ` +
+        `| \`${mdEscape(process.uniqueName)}\` ` +
+        `| ${entityDisplayLabel(process.primaryEntity, entityMap)} ` +
+        `| ${processStatusLabel(process.isActivated, true)} |`,
+      );
+    });
+    lines.push('');
+  }
+
+  lines.push(heading(3, 'Dependency and Layering Analysis'));
+  lines.push('');
+
+  const layers = [
+    { name: 'Data Layer', artifacts: solution.entities.length },
+    { name: 'Presentation Layer', artifacts: solution.forms.length + solution.views.length + solution.apps.length + solution.dashboards.length },
+    { name: 'Automation Layer', artifacts: solution.processes.length + solution.pluginAssemblies.reduce((total, assembly) => total + assembly.steps.length, 0) },
+    { name: 'Integration Layer', artifacts: solution.connectionReferences.length + solution.environmentVariables.length + solution.webResources.length + solution.reports.length },
+  ];
+
+  lines.push('| Layer | Artifact Count |');
+  lines.push('|-------|----------------|');
+  layers.forEach((layer) => lines.push(`| ${layer.name} | ${layer.artifacts} |`));
+  lines.push('');
+
+  const runtimeEdges: DataverseDependencyEdge[] = [];
+
+  solution.forms.forEach((form) => {
+    if (form.entityLogicalName) {
+      runtimeEdges.push({
+        dependentName: form.displayName || form.name,
+        dependentType: 'Form',
+        requiredName: form.entityLogicalName,
+        requiredType: 'Table',
+      });
+    }
+  });
+
+  solution.views.forEach((view) => {
+    if (view.entityLogicalName) {
+      runtimeEdges.push({
+        dependentName: view.displayName || view.name,
+        dependentType: 'View',
+        requiredName: view.entityLogicalName,
+        requiredType: 'Table',
+      });
+    }
+  });
+
+  solution.apps.forEach((app) => {
+    const appName = appTitle(app);
+    (app.entities ?? []).forEach((entityName) => {
+      runtimeEdges.push({
+        dependentName: appName,
+        dependentType: 'App',
+        requiredName: entityName,
+        requiredType: 'Table',
+      });
+    });
+
+    (app.connectors ?? []).forEach((connectorName) => {
+      runtimeEdges.push({
+        dependentName: appName,
+        dependentType: 'App',
+        requiredName: connectorName,
+        requiredType: 'Connector',
+      });
+    });
+  });
+
+  const connectionRefCandidates = solution.connectionReferences.flatMap((reference) => [reference.name, reference.displayName]).filter((value): value is string => !!value);
+  const envVarCandidates = solution.environmentVariables.flatMap((envVar) => [envVar.schemaName, envVar.displayName]).filter((value): value is string => !!value);
+
+  solution.processes.forEach((process) => {
+    const processName = processTitle(process);
+    uniqueStrings([process.primaryEntity, ...(process.relatedEntities ?? [])]).forEach((tableName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: tableName,
+        requiredType: 'Table',
+      });
+    });
+
+    const usedRefs = process.flowConnectionReferences?.length
+      ? process.flowConnectionReferences
+      : matchFlowValues(process.flowDefinition as object | undefined, connectionRefCandidates);
+    usedRefs.forEach((referenceName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: referenceName,
+        requiredType: 'Connection Reference',
+      });
+    });
+
+    const usedEnvVars = process.flowEnvironmentVariables?.length
+      ? process.flowEnvironmentVariables
+      : matchFlowValues(process.flowDefinition as object | undefined, envVarCandidates);
+    usedEnvVars.forEach((envVarName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: envVarName,
+        requiredType: 'Environment Variable',
+      });
+    });
+  });
+
+  solution.pluginAssemblies.forEach((assembly) => {
+    assembly.steps.forEach((step) => {
+      if (!step.primaryEntity) return;
+      runtimeEdges.push({
+        dependentName: `${assembly.assemblyName} :: ${step.name}`,
+        dependentType: 'Plugin Step',
+        requiredName: step.primaryEntity,
+        requiredType: 'Table',
+      });
+    });
+  });
+
+  const allDependencyEdges = [...runtimeEdges, ...dependencies];
+  const normalizedDependencyEdges = mergeByKey(
+    allDependencyEdges,
+    (edge) => `${edge.dependentType}|${edge.dependentName}|${edge.requiredType}|${edge.requiredName}`.toLowerCase(),
+    (first) => first,
+  );
+
+  lines.push(`- Total dependency edges analysed: **${normalizedDependencyEdges.length}**`);
+  lines.push('');
+
+  if (normalizedDependencyEdges.length > 0) {
+    lines.push('| Dependent Artifact | Dependent Type | Required Artifact | Required Type |');
+    lines.push('|--------------------|----------------|-------------------|---------------|');
+
+    sortByLabel(
+      normalizedDependencyEdges,
+      (edge) => `${edge.dependentType}:${edge.dependentName}:${edge.requiredType}:${edge.requiredName}`,
+    )
+      .slice(0, 120)
+      .forEach((edge) => {
+        const requiredLabel = edge.requiredType === 'Table'
+          ? entityDisplayLabel(edge.requiredName, entityMap)
+          : mdEscape(edge.requiredName);
+        lines.push(
+          `| ${mdEscape(edge.dependentName)} ` +
+          `| ${edge.dependentType} ` +
+          `| ${requiredLabel} ` +
+          `| ${edge.requiredType} |`,
+        );
+      });
+    lines.push('');
+
+    const mermaidLines: string[] = ['flowchart LR'];
+    normalizedDependencyEdges.slice(0, 80).forEach((edge, index) => {
+      const fromId = `dep_${index}_from`;
+      const toId = `dep_${index}_to`;
+      mermaidLines.push(`  ${fromId}["${mermaidLabel(`${edge.dependentType}: ${edge.dependentName}`)}"] --> ${toId}["${mermaidLabel(`${edge.requiredType}: ${edge.requiredName}`)}"]`);
+    });
+    lines.push(mermaidBlock(mermaidLines.join('\n'), 'Dependency and Layering Graph'));
+    lines.push('');
+  }
+
+  lines.push(heading(3, 'Security Privilege Summary'));
+  lines.push('');
+
+  const totalRolePrivileges = solution.securityRoles.reduce((total, role) => total + role.privileges.length, 0);
+  const rolesWithGlobalAccess = solution.securityRoles.filter((role) => role.privileges.some((privilege) => privilege.depth >= 4)).length;
+  const rolesWithNoPrivileges = solution.securityRoles.filter((role) => role.privileges.length === 0).length;
+
+  lines.push(`- Roles analysed: **${solution.securityRoles.length}**`);
+  lines.push(`- Total privileges recorded: **${totalRolePrivileges}**`);
+  lines.push(`- Roles with global (Org) privileges: **${rolesWithGlobalAccess}**`);
+  lines.push(`- Roles with no retrievable privileges: **${rolesWithNoPrivileges}**`);
+  lines.push('');
+
+  lines.push(heading(3, 'Plugin Runtime Insights'));
+  lines.push('');
+
+  const allPluginSteps = solution.pluginAssemblies.flatMap((assembly) => assembly.steps);
+  const stageCounts = new Map<number, number>();
+  allPluginSteps.forEach((step) => stageCounts.set(step.stage, (stageCounts.get(step.stage) ?? 0) + 1));
+  const synchronousSteps = allPluginSteps.filter((step) => step.mode === 0).length;
+  const asynchronousSteps = allPluginSteps.filter((step) => step.mode === 1).length;
+  const stepsWithoutFiltering = allPluginSteps.filter((step) => !step.filteringAttributes || step.filteringAttributes.trim().length === 0).length;
+
+  lines.push(`- Plugin assemblies: **${solution.pluginAssemblies.length}**`);
+  lines.push(`- Registered plugin steps: **${allPluginSteps.length}**`);
+  lines.push(`- Synchronous steps: **${synchronousSteps}**, Asynchronous steps: **${asynchronousSteps}**`);
+  lines.push(`- Steps without filtering attributes: **${stepsWithoutFiltering}**`);
+  lines.push('');
+
+  if (allPluginSteps.length > 0) {
+    lines.push('| Stage | Steps |');
+    lines.push('|-------|-------|');
+    sortByLabel(Array.from(stageCounts.entries()), ([stage]) => String(stage)).forEach(([stage, count]) => {
+      lines.push(`| ${stageLabel(stage)} | ${count} |`);
+    });
+    lines.push('');
+  }
+
+  lines.push(heading(3, 'Connector and Environment Inventory'));
+  lines.push('');
+
+  const connectorNames = new Set<string>();
+  solution.connectionReferences.forEach((reference) => {
+    if (reference.connectorDisplayName?.trim()) connectorNames.add(reference.connectorDisplayName.trim());
+    else if (reference.connectorId?.trim()) connectorNames.add(reference.connectorId.trim());
+  });
+  solution.apps.forEach((app) => (app.connectors ?? []).forEach((connector) => connectorNames.add(connector)));
+  solution.processes.forEach((process) => (process.flowConnectors ?? []).forEach((connector) => connectorNames.add(connector)));
+
+  const envVarUsage = new Map<string, number>();
+  const envVarCandidatesByName = solution.environmentVariables.flatMap((envVar) => [envVar.schemaName, envVar.displayName]).filter((value): value is string => !!value);
+  solution.processes.forEach((process) => {
+    const usedEnvVars = process.flowEnvironmentVariables?.length
+      ? process.flowEnvironmentVariables
+      : matchFlowValues(process.flowDefinition as object | undefined, envVarCandidatesByName);
+    usedEnvVars.forEach((name) => envVarUsage.set(name, (envVarUsage.get(name) ?? 0) + 1));
+  });
+
+  lines.push(`- Unique connectors discovered: **${connectorNames.size}**`);
+  lines.push(`- Environment variables defined: **${solution.environmentVariables.length}**`);
+  lines.push(`- Environment variables referenced by processes: **${envVarUsage.size}**`);
+  lines.push('');
+
+  if (connectorNames.size > 0) {
+    lines.push('| Connector | Source |');
+    lines.push('|-----------|--------|');
+    sortByLabel(Array.from(connectorNames), (name) => name).forEach((connectorName) => {
+      const inRefs = solution.connectionReferences.some((reference) => reference.connectorDisplayName === connectorName || reference.connectorId === connectorName);
+      const inApps = solution.apps.some((app) => (app.connectors ?? []).includes(connectorName));
+      const inFlows = solution.processes.some((process) => (process.flowConnectors ?? []).includes(connectorName));
+      const source = [inRefs ? 'Connection References' : '', inApps ? 'Apps' : '', inFlows ? 'Processes' : ''].filter(Boolean).join(', ');
+      lines.push(`| ${mdEscape(connectorName)} | ${source || 'Derived'} |`);
+    });
+    lines.push('');
+  }
+
+  if (solution.environmentVariables.length > 0) {
+    lines.push('| Environment Variable | Type | Has Current Value | Referenced In Processes |');
+    lines.push('|----------------------|------|-------------------|--------------------------|');
+    sortByLabel(solution.environmentVariables, (envVar) => envVar.displayName || envVar.schemaName).forEach((envVar) => {
+      const usageCount = envVarUsage.get(envVar.schemaName)
+        ?? (envVar.displayName ? envVarUsage.get(envVar.displayName) : undefined)
+        ?? 0;
+      lines.push(
+        `| ${mdEscape(envVar.displayName || envVar.schemaName)} ` +
+        `| ${mdEscape(envVar.type)} ` +
+        `| ${envVar.hasCurrentValue ? 'Yes' : 'No'} ` +
+        `| ${usageCount} |`,
+      );
+    });
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Parse warnings
 // ---------------------------------------------------------------------------
 
@@ -1734,7 +2239,7 @@ export function generateMarkdown(
   const attributeDisplayMap = buildAttributeDisplayMap(solution.entities);
 
   const sections: string[] = [
-    generateHeader(solution, options.documentContext),
+    generateHeader(solution, options.documentContext, options.enrichmentIndicators),
     generateTableOfContents(solution),
     generateERD(solution.entities, options),
     generateEntitiesSection(solution.entities, solution.optionSets, entityMap),
@@ -1747,6 +2252,7 @@ export function generateMarkdown(
     generateIntegrationSection(solution.connectionReferences, solution.environmentVariables, solution.emailTemplates),
     generateReportsSection(solution.reports, solution.dashboards),
     generatePluginsSection(solution.pluginAssemblies),
+    generateDataverseInsightsSection(solution, entityMap),
     generateWarningsSection(solution.warnings),
   ];
 
@@ -1764,7 +2270,7 @@ export function generateConsolidatedMarkdown(
 ): string {
   const items = solutions.filter((s) => !!s.metadata.uniqueName);
   if (items.length === 0) return '';
-  if (items.length === 1) return generateMarkdown(items[0]);
+  if (items.length === 1) return generateMarkdown(items[0], options);
 
   const consolidated = consolidateSolutions(items);
   const consolidatedEntityMap = buildEntityDisplayMap(consolidated.entities);
@@ -1780,9 +2286,19 @@ export function generateConsolidatedMarkdown(
   }
 
   lines.push(
-    heading(1, 'Power Platform Solutions: Consolidated Summary'),
+    heading(1, 'Power Platform Solutions: All Selected Solutions'),
     '',
     `> Generated on: ${new Date().toLocaleString()}`,
+  );
+
+  const enrichmentLine = generateEnrichmentLine(options.enrichmentIndicators);
+  if (enrichmentLine) {
+    lines.push('');
+    lines.push(enrichmentLine);
+    lines.push(...generateEnrichmentLegend(options.enrichmentIndicators));
+  }
+
+  lines.push(
     '',
     heading(2, 'Included Solutions'),
     '',
@@ -1900,6 +2416,197 @@ export function generateConsolidatedMarkdown(
       `| ${relatedTables.length > 0 ? sortByLabel(relatedTables, (table) => table).map((table) => entityDisplayLabel(table, consolidatedEntityMap)).join(', ') : '–'} |`,
     );
   });
+  lines.push('');
+
+  return appendBackToTopLinks(lines.join('\n'));
+}
+
+/**
+ * Generates a standalone dependency and layering markdown report for a
+ * single solution.
+ */
+export function generateDependencyReportMarkdown(
+  solution: ParsedSolution,
+  options: MarkdownGenerationOptions = {},
+): string {
+  const entityMap = buildEntityDisplayMap(solution.entities);
+  const lines: string[] = [];
+
+  const contextSection = generateDocumentContextSection(options.documentContext);
+  if (contextSection) {
+    lines.push(contextSection);
+  }
+
+  lines.push(
+    heading(1, `Dependency Report: ${solution.metadata.displayName}`),
+    '',
+    `> Generated on: ${new Date().toLocaleString()}`,
+    '',
+    heading(2, 'Solution Metadata'),
+    '',
+    `- **Unique Name:** ${mdEscape(solution.metadata.uniqueName)}`,
+    `- **Version:** ${mdEscape(solution.metadata.version)}`,
+    `- **Publisher:** ${mdEscape(solution.metadata.publisherName)}`,
+    `- **Type:** ${solution.metadata.isManaged ? 'Managed' : 'Unmanaged'}`,
+    '',
+    heading(2, 'Dependency and Layering Analysis'),
+    '',
+  );
+
+  const layers = [
+    { name: 'Data Layer', artifacts: solution.entities.length },
+    { name: 'Presentation Layer', artifacts: solution.forms.length + solution.views.length + solution.apps.length + solution.dashboards.length },
+    { name: 'Automation Layer', artifacts: solution.processes.length + solution.pluginAssemblies.reduce((total, assembly) => total + assembly.steps.length, 0) },
+    { name: 'Integration Layer', artifacts: solution.connectionReferences.length + solution.environmentVariables.length + solution.webResources.length + solution.reports.length },
+  ];
+
+  lines.push('| Layer | Artifact Count |');
+  lines.push('|-------|----------------|');
+  layers.forEach((layer) => lines.push(`| ${layer.name} | ${layer.artifacts} |`));
+  lines.push('');
+
+  const runtimeEdges: DataverseDependencyEdge[] = [];
+
+  const matchFlowValues = (flow: object | undefined, candidates: string[]) => {
+    if (!flow || candidates.length === 0) return [];
+    const body = JSON.stringify(flow).toLowerCase();
+    return Array.from(new Set(candidates.filter((candidate) => body.includes(candidate.toLowerCase()))));
+  };
+
+  solution.forms.forEach((form) => {
+    if (!form.entityLogicalName) return;
+    runtimeEdges.push({
+      dependentName: form.displayName || form.name,
+      dependentType: 'Form',
+      requiredName: form.entityLogicalName,
+      requiredType: 'Table',
+    });
+  });
+
+  solution.views.forEach((view) => {
+    if (!view.entityLogicalName) return;
+    runtimeEdges.push({
+      dependentName: view.displayName || view.name,
+      dependentType: 'View',
+      requiredName: view.entityLogicalName,
+      requiredType: 'Table',
+    });
+  });
+
+  solution.apps.forEach((app) => {
+    const appName = appTitle(app);
+    (app.entities ?? []).forEach((entityName) => {
+      runtimeEdges.push({
+        dependentName: appName,
+        dependentType: 'App',
+        requiredName: entityName,
+        requiredType: 'Table',
+      });
+    });
+    (app.connectors ?? []).forEach((connectorName) => {
+      runtimeEdges.push({
+        dependentName: appName,
+        dependentType: 'App',
+        requiredName: connectorName,
+        requiredType: 'Connector',
+      });
+    });
+  });
+
+  const connectionRefCandidates = solution.connectionReferences.flatMap((reference) => [reference.name, reference.displayName]).filter((value): value is string => !!value);
+  const envVarCandidates = solution.environmentVariables.flatMap((envVar) => [envVar.schemaName, envVar.displayName]).filter((value): value is string => !!value);
+
+  solution.processes.forEach((process) => {
+    const processName = processTitle(process);
+    uniqueStrings([process.primaryEntity, ...(process.relatedEntities ?? [])]).forEach((tableName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: tableName,
+        requiredType: 'Table',
+      });
+    });
+
+    const usedRefs = process.flowConnectionReferences?.length
+      ? process.flowConnectionReferences
+      : matchFlowValues(process.flowDefinition as object | undefined, connectionRefCandidates);
+    usedRefs.forEach((referenceName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: referenceName,
+        requiredType: 'Connection Reference',
+      });
+    });
+
+    const usedEnvVars = process.flowEnvironmentVariables?.length
+      ? process.flowEnvironmentVariables
+      : matchFlowValues(process.flowDefinition as object | undefined, envVarCandidates);
+    usedEnvVars.forEach((envVarName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: envVarName,
+        requiredType: 'Environment Variable',
+      });
+    });
+  });
+
+  solution.pluginAssemblies.forEach((assembly) => {
+    assembly.steps.forEach((step) => {
+      if (!step.primaryEntity) return;
+      runtimeEdges.push({
+        dependentName: `${assembly.assemblyName} :: ${step.name}`,
+        dependentType: 'Plugin Step',
+        requiredName: step.primaryEntity,
+        requiredType: 'Table',
+      });
+    });
+  });
+
+  const allDependencyEdges = [...runtimeEdges, ...(solution.dataverseInsights?.dependencies ?? [])];
+  const normalizedDependencyEdges = mergeByKey(
+    allDependencyEdges,
+    (edge) => `${edge.dependentType}|${edge.dependentName}|${edge.requiredType}|${edge.requiredName}`.toLowerCase(),
+    (first) => first,
+  );
+
+  lines.push(`- Total dependency edges analysed: **${normalizedDependencyEdges.length}**`);
+  lines.push('');
+
+  if (normalizedDependencyEdges.length === 0) {
+    lines.push('_No dependency edges were detected from the currently available metadata._');
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  lines.push('| Dependent Artifact | Dependent Type | Required Artifact | Required Type |');
+  lines.push('|--------------------|----------------|-------------------|---------------|');
+  sortByLabel(
+    normalizedDependencyEdges,
+    (edge) => `${edge.dependentType}:${edge.dependentName}:${edge.requiredType}:${edge.requiredName}`,
+  ).forEach((edge) => {
+    const requiredLabel = edge.requiredType === 'Table'
+      ? entityDisplayLabel(edge.requiredName, entityMap)
+      : mdEscape(edge.requiredName);
+    lines.push(
+      `| ${mdEscape(edge.dependentName)} ` +
+      `| ${edge.dependentType} ` +
+      `| ${requiredLabel} ` +
+      `| ${edge.requiredType} |`,
+    );
+  });
+  lines.push('');
+
+  const mermaidLines: string[] = ['flowchart LR'];
+  normalizedDependencyEdges.slice(0, 120).forEach((edge, index) => {
+    const fromId = `dep_${index}_from`;
+    const toId = `dep_${index}_to`;
+    mermaidLines.push(`  ${fromId}["${mermaidLabel(`${edge.dependentType}: ${edge.dependentName}`)}"] --> ${toId}["${mermaidLabel(`${edge.requiredType}: ${edge.requiredName}`)}"]`);
+  });
+  lines.push(heading(2, 'Dependency Graph'));
+  lines.push('');
+  lines.push(mermaidBlock(mermaidLines.join('\n'), 'Standalone Dependency Graph'));
   lines.push('');
 
   return appendBackToTopLinks(lines.join('\n'));

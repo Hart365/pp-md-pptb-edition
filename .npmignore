@@ -1,0 +1,36 @@
+# Build and dev files
+src/
+scripts/
+docs/
+.github/
+.vscode/
+.git/
+.gitignore
+.gitattributes
+
+# Configuration files
+tsconfig.json
+vite.config.ts
+eslint.config.js
+.eslintrc*
+
+# Test files
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+vitest.config.ts
+
+# Dependency files
+package-lock.json
+
+# Development documentation
+CONTRIBUTING.md
+DEVELOPMENT.md
+
+# IDE and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.env.local

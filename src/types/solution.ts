@@ -255,6 +255,12 @@ export interface EntityDefinition extends NamedItem {
   entitySetName?: string;
   /** Logical name of the primary name attribute */
   primaryAttributeName?: string;
+  /**
+   * True when this entity was appended from Dataverse metadata to provide
+   * cross-solution reference context.  It is NOT a component of the solution
+   * itself and should be excluded from solution-scoped views (e.g. ERD).
+   */
+  enrichedFromDataverse?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +571,44 @@ export interface PluginAssemblyDefinition extends NamedItem {
 }
 
 // ---------------------------------------------------------------------------
+// Dataverse-connected deep insights (optional)
+// ---------------------------------------------------------------------------
+
+/**
+ * Custom API / Action metadata from Dataverse.
+ */
+export interface DataverseCustomApiDefinition extends NamedItem {
+  /** Unique API schema name */
+  uniqueName: string;
+  /** Whether this API is a function (GET) rather than an action (POST) */
+  isFunction: boolean;
+  /** Binding model: global/entity/entitycollection */
+  bindingType?: string;
+  /** Visibility: private/internal vs public */
+  isPrivate?: boolean;
+  /** Allowed custom processing step type configuration */
+  allowedCustomProcessingStepType?: string;
+}
+
+/**
+ * A dependency edge between two solution artifacts.
+ */
+export interface DataverseDependencyEdge {
+  dependentName: string;
+  dependentType: string;
+  requiredName: string;
+  requiredType: string;
+}
+
+/**
+ * Dataverse-only insight payload for advanced documentation sections.
+ */
+export interface DataverseInsights {
+  customApis: DataverseCustomApiDefinition[];
+  dependencies: DataverseDependencyEdge[];
+}
+
+// ---------------------------------------------------------------------------
 // Top-level parsed solution
 // ---------------------------------------------------------------------------
 
@@ -625,6 +669,8 @@ export interface ParsedSolution {
   dashboards: DashboardDefinition[];
   /** Plugin assemblies (with embedded steps) */
   pluginAssemblies: PluginAssemblyDefinition[];
+  /** Dataverse-only deep insight payload */
+  dataverseInsights?: DataverseInsights;
   /** Any parse warnings or non-fatal errors */
   warnings: string[];
 }

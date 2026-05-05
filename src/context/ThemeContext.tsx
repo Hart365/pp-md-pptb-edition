@@ -21,6 +21,7 @@ import {
   useCallback,
   type ReactNode,
 } from 'react';
+import { getCurrentTheme, isInPPTB, onToolboxEvent } from '../api/toolboxAPI';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,26 +49,12 @@ export interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-// ---------------------------------------------------------------------------
-// Storage key & helpers
-// ---------------------------------------------------------------------------
-
-/** localStorage key under which the user's theme preference is stored. */
-const STORAGE_KEY = 'pp-md-pptb-edition-theme';
-
 /**
- * Reads the user's stored preference or falls back to the OS setting.
+ * Resolves the initial theme from the host environment or OS setting.
  *
  * @returns The resolved {@link Theme}
  */
 function getInitialTheme(): Theme {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark') return stored;
-  } catch {
-    // localStorage may be blocked (e.g. private browsing with strict settings)
-  }
-  // Fall back to OS preference
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
@@ -99,39 +86,55 @@ function applyTheme(theme: Theme): void {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(getInitialTheme);
 
-  // Apply theme to DOM on every change
+  // Apply theme to DOM on every change.
   useEffect(() => {
     applyTheme(theme);
-    try {
-      localStorage.setItem(STORAGE_KEY, theme);
-    } catch {
-      // Ignore storage errors
-    }
   }, [theme]);
 
-  // Also listen for OS-level theme changes (e.g. user changes system dark mode)
+  // Sync with PPTB host theme when running inside ToolBox.
   useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleChange = (e: MediaQueryListEvent) => {
-      // Only react to OS change if the user has NOT manually set a preference
-      try {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (!stored) {
-          setThemeState(e.matches ? 'dark' : 'light');
-        }
-      } catch {
-        setThemeState(e.matches ? 'dark' : 'light');
+    let disposed = false;
+
+    const syncTheme = async () => {
+      const nextTheme = await getCurrentTheme();
+      if (!disposed) {
+        setThemeState(nextTheme);
       }
     };
+
+    if (isInPPTB()) {
+      void syncTheme();
+
+      const unsubscribe = onToolboxEvent((_event, payload) => {
+        if (payload.event === 'settings:updated') {
+          void syncTheme();
+        }
+      });
+
+      return () => {
+        disposed = true;
+        unsubscribe?.();
+      };
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = (e: MediaQueryListEvent) => {
+      setThemeState(e.matches ? 'dark' : 'light');
+    };
     mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
+    return () => {
+      disposed = true;
+      mediaQuery.removeEventListener('change', handleChange);
+    };
   }, []);
 
   const setTheme = useCallback((newTheme: Theme) => {
+    if (isInPPTB()) return;
     setThemeState(newTheme);
   }, []);
 
   const toggleTheme = useCallback(() => {
+    if (isInPPTB()) return;
     setThemeState((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }, []);
 

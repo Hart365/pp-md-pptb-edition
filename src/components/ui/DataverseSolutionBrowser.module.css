@@ -1,0 +1,250 @@
+.browser {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-surface);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.heading {
+  font-size: 1.25rem;
+  color: var(--color-text-primary);
+}
+
+.subtitle {
+  margin-top: 0.35rem;
+  color: var(--color-text-secondary);
+  max-width: 60rem;
+}
+
+.refreshBtn,
+.generateBtn {
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  border-radius: var(--border-radius-md);
+  padding: 0.55rem 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.refreshBtn:focus-visible,
+.generateBtn:focus-visible,
+.miniBtn:focus-visible,
+.publisherSummary:focus-visible,
+.cardCheckbox input:focus-visible {
+  outline: 2px solid var(--color-focus, #005fcc);
+  outline-offset: 2px;
+}
+
+.refreshBtn:disabled,
+.generateBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+.field input,
+.field select {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  border-radius: var(--border-radius-md);
+  padding: 0.55rem 0.7rem;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: var(--color-surface-alt);
+  padding: 0.55rem 0.7rem;
+}
+
+.cardSelected {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.cardCheckbox {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.cardCheckbox input {
+  margin-top: 0.18rem;
+  flex-shrink: 0;
+}
+
+.cardMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.cardTopLine {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.cardTitle {
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0;
+}
+
+.cardDescription {
+  color: var(--color-text-secondary);
+  font-size: 0.86rem;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badges {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--border-radius-pill);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.publisherFilter {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: var(--color-surface-alt);
+  padding: 0.45rem 0.7rem;
+}
+
+.publisherSummary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.publisherActions,
+.selectionActions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.publisherActions {
+  margin-top: 0.6rem;
+}
+
+.publisherList {
+  margin-top: 0.45rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.4rem;
+}
+
+.publisherItem {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.selectionBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: var(--color-surface-alt);
+  padding: 0.55rem 0.7rem;
+}
+
+.selectionText {
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+}
+
+.miniBtn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--border-radius-md);
+  padding: 0.35rem 0.55rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.error {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+  border-radius: var(--border-radius-md);
+  padding: 0.7rem 0.85rem;
+}
+
+.loading,
+.empty {
+  color: var(--color-text-secondary);
+  padding: 1rem 0.25rem;
+}
+
+@media (max-width: 768px) {
+  .headerRow,
+  .selectionBar,
+  .cardTopLine {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .badges {
+    flex-wrap: wrap;
+  }
+}

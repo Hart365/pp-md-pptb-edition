@@ -5,8 +5,9 @@
  * tables, and copy/export actions.
  */
 
-import { useState, useCallback, useRef, type MouseEvent, type ReactNode } from 'react';
+import { useState, useCallback, useRef, type ComponentPropsWithoutRef, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -18,10 +19,13 @@ export interface MarkdownViewerProps {
   onExport?: () => void;
 }
 
+type HeadingRendererProps = ComponentPropsWithoutRef<'h1'> & { children?: ReactNode };
+
 /**
- * Extract text from nested React nodes.
+ * Extract plain text from nested React nodes so markdown headings can be
+ * normalized into stable in-document anchors.
  */
-function extractText(node: ReactNode): string {
+export function extractText(node: ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') return String(node);
   if (Array.isArray(node)) return node.map(extractText).join(' ');
   if (node && typeof node === 'object' && 'props' in node) {
@@ -31,9 +35,9 @@ function extractText(node: ReactNode): string {
 }
 
 /**
- * Convert node text to URL-safe heading ID.
+ * Convert heading node content into a URL-safe slug used as the heading id.
  */
-function slugifyHeading(children: ReactNode): string {
+export function slugifyHeading(children: ReactNode): string {
   return extractText(children)
     .toLowerCase()
     .replace(/[^\w\s-]/g, '')
@@ -84,17 +88,18 @@ export function MarkdownViewer({ markdown, title, onExport }: MarkdownViewerProp
   }, []);
 
   const makeHeading = (Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6') => {
-    return ({ children, ...props }: any) => {
+    return ({ children, ...props }: HeadingRendererProps) => {
       const id = slugifyHeading(children);
       return <Tag id={id} {...props}>{children}</Tag>;
     };
   };
 
-  const components = {
-    code: ({ className, children, ...props }: any) => {
-      const lang = /language-(\w+)/.exec(className)?.[1] ?? '';
+  const components: Components = {
+    code: ({ className, children, ...props }) => {
+      const classNameText = typeof className === 'string' ? className : '';
+      const lang = /language-(\w+)/.exec(classNameText)?.[1] ?? '';
       if (lang !== 'mermaid') {
-        return <code className={className} {...props}>{children}</code>;
+        return <code className={classNameText} {...props}>{children}</code>;
       }
       const src = String(children).replace(/\n$/, '');
       const cap = src.match(/%%\s*(.+?)\s*%%/)?.[1] ?? 'Diagram';
@@ -106,7 +111,7 @@ export function MarkdownViewer({ markdown, title, onExport }: MarkdownViewerProp
     h4: makeHeading('h4'),
     h5: makeHeading('h5'),
     h6: makeHeading('h6'),
-    a: ({ href, children, ...props }: any) => {
+    a: ({ href, children, ...props }) => {
       const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
         if (!href?.startsWith('#')) return;
         if (!scrollToHeading(href)) return;
@@ -115,7 +120,7 @@ export function MarkdownViewer({ markdown, title, onExport }: MarkdownViewerProp
 
       return <a href={href} {...props} onClick={handleClick}>{children}</a>;
     },
-    table: ({ children, ...props }: any) => (
+    table: ({ children, ...props }) => (
       <div style={{ overflowX: 'auto', margin: '1rem 0' }} role="region" aria-label="Table">
         <table {...props}>{children}</table>
       </div>

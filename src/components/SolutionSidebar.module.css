@@ -65,6 +65,15 @@
   flex: 1;
 }
 
+.combinedLinkPanel {
+  border-top: 1px solid var(--color-border);
+  padding: 0.5rem;
+}
+
+.combinedItem {
+  font-weight: 600;
+}
+
 .listItem {
   padding: 0 0.5rem;
 }
@@ -176,6 +185,12 @@
     flex-direction: row;
     padding: 0.3rem;
     flex: 1;
+  }
+  .combinedLinkPanel {
+    border-top: none;
+    border-left: 1px solid var(--color-border);
+    padding: 0.3rem;
+    flex-shrink: 0;
   }
   .listItem {
     padding: 0 0.2rem;

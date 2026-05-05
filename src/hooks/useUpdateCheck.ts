@@ -7,6 +7,67 @@ import { useState, useCallback } from 'react';
 import type { ReleaseAsset, Platform, Architecture, InstallType } from '../utils/versionUtils';
 import { compareVersions, findMatchingAsset, getPlatform } from '../utils/versionUtils';
 
+export interface AppInfoResponse {
+  platform: Platform;
+  architecture: Architecture;
+  installType: InstallType;
+}
+
+export interface GitHubReleaseAsset {
+  name: string;
+  browser_download_url: string;
+  size: number;
+}
+
+export interface GitHubReleaseResponse {
+  tag_name: string;
+  html_url: string;
+  published_at: string;
+  assets?: GitHubReleaseAsset[];
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function isAppInfoResponse(value: unknown): value is AppInfoResponse {
+  if (!isObjectRecord(value)) return false;
+
+  return (
+    (value.platform === 'windows' || value.platform === 'linux' || value.platform === 'macos') &&
+    (value.architecture === 'x64' || value.architecture === 'arm64') &&
+    (value.installType === 'installer' || value.installType === 'portable')
+  );
+}
+
+export function isGitHubReleaseResponse(value: unknown): value is GitHubReleaseResponse {
+  if (!isObjectRecord(value)) return false;
+
+  return (
+    typeof value.tag_name === 'string' &&
+    typeof value.html_url === 'string' &&
+    typeof value.published_at === 'string'
+  );
+}
+
+export function mapReleaseAssets(release: GitHubReleaseResponse): ReleaseAsset[] {
+  if (!Array.isArray(release.assets)) return [];
+
+  return release.assets
+    .filter((asset): asset is GitHubReleaseAsset =>
+      isObjectRecord(asset) &&
+      typeof asset.name === 'string' &&
+      typeof asset.browser_download_url === 'string' &&
+      typeof asset.size === 'number' &&
+      Number.isFinite(asset.size),
+    )
+    .map((asset) => ({
+      name: asset.name,
+      downloadUrl: asset.browser_download_url,
+      size: asset.size,
+    }));
+}
+
 export interface UpdateCheckResult {
   hasUpdate: boolean;
   currentVersion: string;
@@ -40,7 +101,7 @@ export function useUpdateCheck() {
 
     try {
       // Get current app version from window (set by Electron)
-      const currentVersion = (window as any).__PPMD_VERSION__ || '1.0.0';
+      const currentVersion = window.__PPMD_VERSION__ || '1.0.0';
       
       // Get current platform/arch info from Electron main process
       let platform: Platform = getPlatform();
@@ -48,12 +109,14 @@ export function useUpdateCheck() {
       let installType: InstallType = 'portable';
 
       // Request info from Electron main process via IPC
-      if ((window as any).electron?.invoke) {
+      if (window.electron?.invoke) {
         try {
-          const info = await (window as any).electron.invoke('get-app-info');
-          platform = info.platform;
-          arch = info.architecture;
-          installType = info.installType;
+          const info = await window.electron.invoke('get-app-info');
+          if (isAppInfoResponse(info)) {
+            platform = info.platform;
+            arch = info.architecture;
+            installType = info.installType;
+          }
         } catch (e) {
           console.warn('Failed to get app info from Electron:', e);
         }
@@ -73,7 +136,12 @@ export function useUpdateCheck() {
         throw new Error(`GitHub API error: ${response.status}`);
       }
 
-      const release = await response.json();
+      const releasePayload: unknown = await response.json();
+      if (!isGitHubReleaseResponse(releasePayload)) {
+        throw new Error('GitHub response shape is invalid.');
+      }
+
+      const release = releasePayload;
       const latestVersion = release.tag_name;
 
       // Compare versions
@@ -97,11 +165,7 @@ export function useUpdateCheck() {
       }
 
       // Parse release assets
-      const assets: ReleaseAsset[] = (release.assets || []).map((asset: any) => ({
-        name: asset.name,
-        downloadUrl: asset.browser_download_url,
-        size: asset.size,
-      }));
+      const assets = mapReleaseAssets(release);
 
       // Find matching asset for current platform/arch
       const downloadAsset = findMatchingAsset(assets, platform, arch, installType);

@@ -1,48 +1,24 @@
 /**
  * @file DropZone.tsx
  * @description Accessible drag-and-drop / click-to-browse file input component.
- *
- * Accessibility features:
- *  - Role: the outer div is keyboard-focusable and announces as a "region" with
- *    an aria-label.  The hidden <input> receives actual file selections.
- *  - When drag is active, aria-live="polite" announces the state change.
- *  - Each selected file can be removed via a labelled button.
- *  - Supports multiple ZIP files simultaneously.
- *  - File type validation with clear error messaging (aria-live="assertive").
  */
 
 import { useRef, useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
 import styles from './DropZone.module.css';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface DropZoneProps {
-  /** Called when the user has selected/dropped valid ZIP files */
   onFilesSelected: (files: File[]) => void;
-  /** Whether the component is currently disabled (e.g. during processing) */
   disabled?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Validation helpers
-// ---------------------------------------------------------------------------
-
-/** Only ZIP archives are accepted (MIME and extension check). */
 function isValidZip(file: File): boolean {
   return (
-    file.type === 'application/zip' ||
-    file.type === 'application/x-zip-compressed' ||
-    file.name.toLowerCase().endsWith('.zip')
+    file.type === 'application/zip'
+    || file.type === 'application/x-zip-compressed'
+    || file.name.toLowerCase().endsWith('.zip')
   );
 }
 
-/**
- * Formats a file size in bytes to a human-readable string.
- *
- * @param bytes - Raw byte count
- */
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -57,132 +33,85 @@ function sortFilesByName(files: File[]): File[] {
   ));
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-/**
- * DropZone component — lets users drag-and-drop or browse for Power Platform
- * solution ZIP files.
- */
 export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
-  /** Files currently queued in the list (not yet processed) */
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
-  /** Whether a drag operation is currently over the zone */
   const [isDragActive, setIsDragActive] = useState(false);
-  /** Validation error message */
   const [error, setError] = useState<string>('');
-  /** The hidden file <input> element reference */
   const inputRef = useRef<HTMLInputElement>(null);
 
-  /**
-   * Filters a FileList/array for valid ZIPs and updates state.
-   *
-   * @param rawFiles - Array of files from drag event or input change
-   */
-  const handleFiles = useCallback(
-    (rawFiles: File[]) => {
-      const valid   = rawFiles.filter(isValidZip);
-      const invalid = rawFiles.filter((f) => !isValidZip(f));
+  const handleFiles = useCallback((rawFiles: File[]) => {
+    const valid = rawFiles.filter(isValidZip);
+    const invalid = rawFiles.filter((file) => !isValidZip(file));
 
-      if (invalid.length > 0) {
-        setError(`${invalid.length} file(s) ignored — only .zip files are accepted.`);
-      } else {
-        setError('');
-      }
+    if (invalid.length > 0) {
+      setError(`${invalid.length} file(s) ignored - only .zip files are accepted.`);
+    } else {
+      setError('');
+    }
 
-      if (valid.length === 0) return;
+    if (valid.length === 0) return;
 
-      // Deduplicate by name
-      setQueuedFiles((prev) => {
-        const merged = [...prev];
-        valid.forEach((f) => {
-          if (!merged.some((x) => x.name.toLowerCase() === f.name.toLowerCase())) merged.push(f);
-        });
-        return sortFilesByName(merged);
+    setQueuedFiles((prev) => {
+      const merged = [...prev];
+      valid.forEach((file) => {
+        if (!merged.some((item) => item.name.toLowerCase() === file.name.toLowerCase())) {
+          merged.push(file);
+        }
       });
-    },
-    [],
-  );
+      return sortFilesByName(merged);
+    });
+  }, []);
 
-  // ── Drag events ────────────────────────────────────────────────────────────
-
-  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     if (!disabled) setIsDragActive(true);
   }, [disabled]);
 
-  const handleDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     setIsDragActive(false);
   }, []);
 
-  const handleDrop = useCallback(
-    (e: DragEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsDragActive(false);
-      if (disabled) return;
-      const files = Array.from(e.dataTransfer.files);
-      handleFiles(files);
-    },
-    [disabled, handleFiles],
-  );
+  const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragActive(false);
+    if (disabled) return;
+    handleFiles(Array.from(event.dataTransfer.files));
+  }, [disabled, handleFiles]);
 
-  // ── Input change ───────────────────────────────────────────────────────────
+  const handleInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    handleFiles(Array.from(event.target.files ?? []));
+    event.target.value = '';
+  }, [handleFiles]);
 
-  const handleInputChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files ?? []);
-      handleFiles(files);
-      // Reset input so the same file can be re-selected after removal
-      e.target.value = '';
-    },
-    [handleFiles],
-  );
-
-  // ── Keyboard activation of the browse button ────────────────────────────
-
-  const handleZoneKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if ((e.key === 'Enter' || e.key === ' ') && !disabled) {
-        e.preventDefault();
-        inputRef.current?.click();
-      }
-    },
-    [disabled],
-  );
-
-  // ── Remove a single file from the queue ────────────────────────────────
+  const handleZoneKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((event.key === 'Enter' || event.key === ' ') && !disabled) {
+      event.preventDefault();
+      inputRef.current?.click();
+    }
+  }, [disabled]);
 
   const removeFile = useCallback((name: string) => {
-    setQueuedFiles((prev) => prev.filter((f) => f.name !== name));
+    setQueuedFiles((prev) => prev.filter((file) => file.name !== name));
   }, []);
 
-  // ── Process queued files ──────────────────────────────────────────────────
-
   const handleProcess = useCallback(() => {
-    if (queuedFiles.length === 0) return;
+    if (queuedFiles.length === 0 || disabled) return;
     onFilesSelected(sortFilesByName(queuedFiles));
-  }, [queuedFiles, onFilesSelected]);
-
-  // ── Render ─────────────────────────────────────────────────────────────────
+    setQueuedFiles([]);
+  }, [disabled, onFilesSelected, queuedFiles]);
 
   const zoneClass = [
     styles.dropzone,
     isDragActive ? styles.active : '',
-    disabled      ? styles.disabled : '',
+    disabled ? styles.disabled : '',
   ].filter(Boolean).join(' ');
 
   return (
     <div>
-      {/*
-       * The drop zone container.
-       * role="button" + tabIndex=0 makes it keyboard-accessible
-       * aria-describedby points to the subtitle for richer context
-       */}
       <div
         className={zoneClass}
         role="button"
@@ -196,12 +125,10 @@ export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
         onKeyDown={handleZoneKeyDown}
         onClick={() => !disabled && inputRef.current?.click()}
       >
-        {/* aria-live region announces drag state to screen readers */}
         <div aria-live="polite" className="sr-only">
           {isDragActive ? 'Drop files to add them' : ''}
         </div>
 
-        {/* Icon — presentational */}
         <div className={styles.icon} aria-hidden="true">
           {isDragActive ? '📂' : '📁'}
         </div>
@@ -210,8 +137,7 @@ export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
           {isDragActive ? 'Release to add files' : 'Drag & drop solution ZIP files here'}
         </p>
         <p id="dz-subtitle" className={styles.subtitle}>
-          Accepts one or more Power Platform solution <code>.zip</code> archives.
-          You can also click or press Enter to browse.
+          Accepts one or more Power Platform solution ZIP archives. You can also click or press Enter to browse.
         </p>
 
         <button
@@ -219,16 +145,15 @@ export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
           className={styles.browseBtn}
           disabled={disabled}
           aria-label="Browse for solution ZIP files"
-          tabIndex={-1} /* Parent div handles keyboard; avoid double tab stop */
-          onClick={(e) => {
-            e.stopPropagation();
+          tabIndex={-1}
+          onClick={(event) => {
+            event.stopPropagation();
             inputRef.current?.click();
           }}
         >
           Browse files
         </button>
 
-        {/* Hidden file input */}
         <input
           ref={inputRef}
           type="file"
@@ -242,7 +167,6 @@ export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
         />
       </div>
 
-      {/* Error message — assertive for immediate announcement */}
       {error && (
         <p
           role="alert"
@@ -253,25 +177,20 @@ export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
             fontSize: '0.875rem',
           }}
         >
-          ⚠️ {error}
+          {error}
         </p>
       )}
 
-      {/* Queued files list */}
       {queuedFiles.length > 0 && (
         <div style={{ marginTop: '1rem' }}>
-          <p
-            style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', marginBottom: '0.5rem' }}
-          >
+          <p style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', marginBottom: '0.5rem' }}>
             {queuedFiles.length} file{queuedFiles.length > 1 ? 's' : ''} ready to process:
           </p>
           <ul className={styles.fileList} aria-label="Files queued for processing">
             {queuedFiles.map((file) => (
               <li key={file.name} className={styles.fileItem}>
                 <span className={styles.fileIcon} aria-hidden="true">🗜️</span>
-                <span className={styles.fileName} title={file.name}>
-                  {file.name}
-                </span>
+                <span className={styles.fileName} title={file.name}>{file.name}</span>
                 <span
                   style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}
                   aria-label={`Size: ${humanSize(file.size)}`}

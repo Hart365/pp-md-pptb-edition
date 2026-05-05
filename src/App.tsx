@@ -20,24 +20,36 @@
  *    user must click Generate.
  */
 
-import { useState, useCallback, useEffect, type ChangeEvent } from 'react';
-import { saveAs } from 'file-saver';
+import { useState, useCallback, useEffect, useRef, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import JSZip from 'jszip';
 import { DropZone }          from './components/ui/DropZone';
+import { DataverseSolutionBrowser } from './components/ui/DataverseSolutionBrowser';
 import { ProgressBar }       from './components/ui/ProgressBar';
 import { MarkdownViewer }    from './components/ui/MarkdownViewer';
 import { SolutionSidebar }   from './components/SolutionSidebar';
-import { ThemeToggle }       from './components/ui/ThemeToggle';
-import { UpdateChecker }     from './components/ui/UpdateChecker';
 import { parseSolutionZip }  from './parser/solutionParser';
 import {
   generateMarkdown,
   generateConsolidatedMarkdown,
+  generateDependencyReportMarkdown,
   consolidateSolutions,
+  fillSolutionGapsFromPeerSolutions,
   type DocumentContext,
+  type EnrichmentIndicators,
 } from './generator/markdownGenerator';
 import type { ParsedSolution } from './types/solution';
+import {
+  buildParsedSolutionFromDataverse,
+  enrichSolutionsWithDataverseMetadata,
+  listDataverseSolutions,
+  type DataverseSolutionSummary,
+} from './dataverse/solutionService';
+import { useToolboxAPI }     from './hooks/useToolboxAPI';
+import { exportMarkdown, exportZip } from './api/fileManager';
+import { showNotification }  from './api/toolboxAPI';
 import appIcon from './assets/app-icon.svg';
+import githubMark from './assets/github-mark.svg';
+import packageJson from '../package.json';
 import styles from './App.module.css';
 
 // ---------------------------------------------------------------------------
@@ -57,9 +69,12 @@ interface SolutionResult {
   markdown:  string;
   fileName:  string;
   isConsolidated?: boolean;
+  peerGapFillApplied?: boolean;
+  dataverseMetadataEnriched?: boolean;
 }
 
 type ErdMode = 'compact' | 'detailed-relationships';
+type LaunchMode = 'local' | 'dataverse';
 
 interface SavedDocumentConfiguration extends DocumentContext {
   id: string;
@@ -81,6 +96,12 @@ const EMPTY_DOCUMENT_CONTEXT: DocumentContext = {
   sprint: '',
   releaseDate: '',
 };
+
+const APP_VERSION = packageJson.version;
+const GITHUB_REPO_URL = typeof packageJson.repository === 'string'
+  ? packageJson.repository
+  : packageJson.repository?.url ?? 'https://github.com';
+const WEBSITE_URL = 'https://HartOfTheMidlands.co.uk';
 
 function toSafeMarkdownBaseName(rawName: string | undefined | null, fallback: string): string {
   const source = (rawName || fallback).trim();
@@ -107,6 +128,17 @@ function sortFilesByName(files: File[]): File[] {
     undefined,
     { numeric: true, sensitivity: 'base' },
   ));
+}
+
+function resultEnrichmentIndicators(result: Pick<SolutionResult, 'peerGapFillApplied' | 'dataverseMetadataEnriched'>): EnrichmentIndicators {
+  return {
+    peerGapFillApplied: result.peerGapFillApplied,
+    dataverseMetadataEnriched: result.dataverseMetadataEnriched,
+  };
+}
+
+function isInvalidArchiveError(message: string): boolean {
+  return /invalid|zip|archive|solution\.xml|central directory/i.test(message);
 }
 
 function readSavedConfigurations(): SavedDocumentConfiguration[] {
@@ -155,19 +187,72 @@ function writeHiddenConfigurationIds(ids: string[]): void {
 
 function buildConsolidatedResult(
   results: SolutionResult[],
-  _erdMode: ErdMode,
+  erdMode: ErdMode,
   documentContext: DocumentContext,
 ): SolutionResult {
   const solutions = results.map((r) => r.solution);
-  const markdown = generateConsolidatedMarkdown(solutions, { documentContext });
   const aggregated: ParsedSolution = consolidateSolutions(solutions);
+  const indicators: EnrichmentIndicators = {
+    peerGapFillApplied: results.some((result) => result.peerGapFillApplied),
+    dataverseMetadataEnriched: results.some((result) => result.dataverseMetadataEnriched),
+  };
+  const summaryMarkdown = generateConsolidatedMarkdown(solutions, { documentContext, enrichmentIndicators: indicators });
+  const detailedMarkdown = generateMarkdown(aggregated, { erdMode, documentContext, enrichmentIndicators: indicators });
+  const markdown = `${summaryMarkdown}\n\n---\n\n${detailedMarkdown}`;
 
   return {
     solution: aggregated,
     markdown,
-    fileName: 'consolidated-summary.md',
+    fileName: 'all-selected-solutions.md',
     isConsolidated: true,
+    peerGapFillApplied: indicators.peerGapFillApplied,
+    dataverseMetadataEnriched: indicators.dataverseMetadataEnriched,
   };
+}
+
+function buildResultsWithCombinedDocument(
+  baseResults: SolutionResult[],
+  erdMode: ErdMode,
+  documentContext: DocumentContext,
+): SolutionResult[] {
+  const sortedBase = sortSolutionResults(baseResults
+    .filter((entry) => !entry.isConsolidated));
+
+  const enrichedBase = sortedBase.map((entry, index, allEntries) => {
+    const peerSolutions = allEntries
+      .filter((_, peerIndex) => peerIndex !== index)
+      .map((peer) => peer.solution);
+    const enrichedSolution = fillSolutionGapsFromPeerSolutions(entry.solution, peerSolutions);
+
+    return {
+      ...entry,
+      solution: enrichedSolution,
+      peerGapFillApplied: peerSolutions.length > 0,
+      markdown: generateMarkdown(enrichedSolution, {
+        erdMode,
+        documentContext,
+        enrichmentIndicators: resultEnrichmentIndicators({
+          peerGapFillApplied: peerSolutions.length > 0,
+          dataverseMetadataEnriched: entry.dataverseMetadataEnriched,
+        }),
+      }),
+    };
+  });
+
+  if (enrichedBase.length > 1) {
+    return [...enrichedBase, buildConsolidatedResult(enrichedBase, erdMode, documentContext)];
+  }
+
+  return enrichedBase;
+}
+
+function getLastBaseResultIndex(items: SolutionResult[]): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (!items[index].isConsolidated) {
+      return index;
+    }
+  }
+  return 0;
 }
 
 function rebuildResults(
@@ -175,18 +260,8 @@ function rebuildResults(
   erdMode: ErdMode,
   documentContext: DocumentContext,
 ): SolutionResult[] {
-  const base = sortSolutionResults(results
-    .filter((entry) => !entry.isConsolidated)
-    .map((entry) => ({
-      ...entry,
-      markdown: generateMarkdown(entry.solution, { erdMode, documentContext }),
-    })));
-
-  if (base.length > 1) {
-    return [buildConsolidatedResult(base, erdMode, documentContext), ...base];
-  }
-
-  return base;
+  const base = results.filter((entry) => !entry.isConsolidated);
+  return buildResultsWithCombinedDocument(base, erdMode, documentContext);
 }
 
 /**
@@ -243,6 +318,76 @@ export default function App() {
   const [newConfigName, setNewConfigName] = useState<string>('');
   /** True when switching to a heavy markdown document so we can show feedback */
   const [isViewerLoading, setIsViewerLoading] = useState<boolean>(false);
+  /** Launch mode selected by the user */
+  const [launchMode, setLaunchMode] = useState<LaunchMode | null>(null);
+  /** Solutions read from the active Dataverse environment */
+  const [dataverseSolutions, setDataverseSolutions] = useState<DataverseSolutionSummary[]>([]);
+  /** Dataverse solution browser loading state */
+  const [isDataverseLoading, setIsDataverseLoading] = useState<boolean>(false);
+  /** Dataverse solution browser error */
+  const [dataverseError, setDataverseError] = useState<string>('');
+  /** Search term for Dataverse solutions */
+  const [dataverseSearch, setDataverseSearch] = useState<string>('');
+  /** Sort order for Dataverse solutions */
+  const [dataverseSort, setDataverseSort] = useState<'name-asc' | 'name-desc' | 'version-asc' | 'version-desc'>('name-asc');
+  /** Managed / unmanaged filter */
+  const [dataverseManagedFilter, setDataverseManagedFilter] = useState<'all' | 'managed' | 'unmanaged'>('all');
+  /** Selected publishers used to filter Dataverse solutions */
+  const [selectedPublishers, setSelectedPublishers] = useState<string[]>([]);
+  /** Selected Dataverse solution IDs for batch generation */
+  const [selectedDataverseSolutionIds, setSelectedDataverseSolutionIds] = useState<string[]>([]);
+  /** Dataverse solution IDs currently being processed */
+  const [busySolutionIds, setBusySolutionIds] = useState<string[]>([]);
+  /** Blocking invalid ZIP modal message */
+  const [invalidArchiveMessage, setInvalidArchiveMessage] = useState<string | null>(null);
+  /** Whether standalone dependency report export is enabled */
+  const [includeDependencyReport, setIncludeDependencyReport] = useState<boolean>(false);
+  const invalidArchiveOkRef = useRef<HTMLButtonElement | null>(null);
+
+  /**
+   * Guard against host click-through on startup opening external links.
+   * A mouse click is accepted only when the same anchor received mousedown first.
+   * Keyboard activation (detail === 0) is always allowed.
+   */
+  const handleExternalLinkMouseDown = useCallback((event: ReactMouseEvent<HTMLAnchorElement>) => {
+    event.currentTarget.dataset.ppmdArmed = 'true';
+  }, []);
+
+  const handleExternalLinkClick = useCallback((event: ReactMouseEvent<HTMLAnchorElement>) => {
+    const anchor = event.currentTarget;
+    const armed = anchor.dataset.ppmdArmed === 'true';
+    delete anchor.dataset.ppmdArmed;
+
+    // Keyboard-triggered anchor activation should continue to work.
+    if (event.detail === 0) return;
+
+    if (!armed) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, []);
+
+  // Initialize PPTB API integration
+  const {
+    connection,
+    isLoading: pptbLoading,
+    isInPPTB,
+    initializeConnection,
+  } = useToolboxAPI({ autoInitConnection: false });
+
+  const displayVersion = (window as Window & { __PPMD_VERSION__?: string }).__PPMD_VERSION__ || APP_VERSION;
+
+  useEffect(() => {
+    if (!isInPPTB) return;
+
+    const timer = window.setTimeout(() => {
+      void initializeConnection();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [isInPPTB, initializeConnection]);
 
   useEffect(() => {
     let active = true;
@@ -277,6 +422,12 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (invalidArchiveMessage) {
+      invalidArchiveOkRef.current?.focus();
+    }
+  }, [invalidArchiveMessage]);
 
   const applyConfiguration = useCallback((config: SavedDocumentConfiguration) => {
     const nextDocumentContext: DocumentContext = {
@@ -373,6 +524,71 @@ export default function App() {
     setStatusMsg(`Configuration "${configToDelete.name}" deleted.`);
   }, [configurations, selectedConfigId]);
 
+  const loadDataverseSolutions = useCallback(async () => {
+    const activeConnection = connection ?? await initializeConnection();
+    if (!activeConnection) {
+      setDataverseSolutions([]);
+      setDataverseError('No active Dataverse connection is available. Open or activate a connection in Power Platform ToolBox, then refresh this list.');
+      return;
+    }
+
+    setIsDataverseLoading(true);
+    setDataverseError('');
+
+    try {
+      const solutions = await listDataverseSolutions();
+      setDataverseSolutions(solutions);
+      setStatusMsg(`Loaded ${solutions.length} solution${solutions.length === 1 ? '' : 's'} from ${activeConnection.name}.`);
+
+      const publishers = Array.from(new Set(
+        solutions
+          .map((solution) => solution.publisherName?.trim())
+          .filter((name): name is string => Boolean(name)),
+      )).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
+
+      setSelectedPublishers(publishers);
+      setSelectedDataverseSolutionIds([]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to read solutions from Dataverse.';
+      setDataverseSolutions([]);
+      setSelectedPublishers([]);
+      setSelectedDataverseSolutionIds([]);
+      setDataverseError(message);
+      setStatusMsg(`Failed to load Dataverse solutions: ${message}`);
+    } finally {
+      setIsDataverseLoading(false);
+    }
+  }, [connection, initializeConnection]);
+
+  const handleSelectLaunchMode = useCallback((mode: LaunchMode) => {
+    setLaunchMode(mode);
+    setResults([]);
+    setActiveIdx(0);
+    setProcessing([]);
+    setIsProcessing(false);
+    setDataverseError('');
+    setSelectedDataverseSolutionIds([]);
+    setStatusMsg(mode === 'local'
+      ? 'Local Solutions mode selected. Upload one or more solution ZIP files to continue.'
+      : 'Dataverse Connected mode selected. Choose a solution from the active environment to continue.');
+    if (mode === 'dataverse') {
+      void loadDataverseSolutions();
+    }
+  }, [loadDataverseSolutions]);
+
+  const handleReturnToModeSelection = useCallback(() => {
+    setLaunchMode(null);
+    setResults([]);
+    setActiveIdx(0);
+    setProcessing([]);
+    setIsProcessing(false);
+    setBusySolutionIds([]);
+    setSelectedPublishers([]);
+    setSelectedDataverseSolutionIds([]);
+    setInvalidArchiveMessage(null);
+    setStatusMsg('Choose how you want to generate solution documentation.');
+  }, []);
+
   const updateProcessingEntry = useCallback(
     (index: number, updater: (entry: ProcessingEntry) => ProcessingEntry) => {
       setProcessing((prev) => {
@@ -407,6 +623,7 @@ export default function App() {
     setProcessing(initial);
 
     const newResults: SolutionResult[] = [];
+    const invalidArchiveFiles: string[] = [];
 
     for (let i = 0; i < sortedFiles.length; i++) {
       const file = sortedFiles[i];
@@ -429,19 +646,20 @@ export default function App() {
       } catch (err: unknown) {
         const msg = (err as Error).message ?? 'Unknown error';
         updateProcessingEntry(i, (entry) => ({ ...entry, progress: 0, error: msg }));
+        if (isInvalidArchiveError(msg)) {
+          invalidArchiveFiles.push(file.name);
+        }
         // Continue with remaining files rather than aborting
       }
     }
 
     if (newResults.length > 0) {
       const existingBase = results.filter((r) => !r.isConsolidated);
-      const mergedBase = sortSolutionResults([...existingBase, ...newResults]);
-      const nextResults = mergedBase.length > 1
-        ? [buildConsolidatedResult(mergedBase, erdMode, documentContext), ...mergedBase]
-        : mergedBase;
+      const mergedBase = [...existingBase, ...newResults];
+      const nextResults = buildResultsWithCombinedDocument(mergedBase, erdMode, documentContext);
 
       setResults(nextResults);
-      setActiveIdx(nextResults.length > 1 && nextResults[0].isConsolidated ? 0 : Math.max(0, nextResults.length - 1));
+      setActiveIdx(getLastBaseResultIndex(nextResults));
       const count  = newResults.length;
       const failed = sortedFiles.length - count;
       setStatusMsg(
@@ -454,9 +672,153 @@ export default function App() {
     }
 
     setIsProcessing(false);
+    if (invalidArchiveFiles.length > 0) {
+      setInvalidArchiveMessage(
+        invalidArchiveFiles.length === 1
+          ? `${invalidArchiveFiles[0]} is not a valid Power Platform solution ZIP archive and was removed from the selection list.`
+          : `${invalidArchiveFiles.length} invalid ZIP archives were removed from the selection list.`,
+      );
+    }
     // Clear progress indicators after a brief delay
     setTimeout(() => setProcessing([]), 1500);
   }, [results, erdMode, documentContext, updateProcessingEntry]);
+
+  const handleGenerateSelectedDataverseSolutions = useCallback(async () => {
+    if (selectedDataverseSolutionIds.length === 0) {
+      setDataverseError('Select at least one solution to generate documentation.');
+      return;
+    }
+
+    const activeConnection = connection ?? await initializeConnection();
+    if (!activeConnection) {
+      setDataverseError('No active Dataverse connection is available. Open or activate a connection in Power Platform ToolBox and try again.');
+      return;
+    }
+
+    const selectedSummaries = dataverseSolutions.filter(
+      (solution) => selectedDataverseSolutionIds.includes(solution.solutionId),
+    );
+    if (selectedSummaries.length === 0) {
+      setDataverseError('The selected solutions are no longer available. Refresh the list and try again.');
+      return;
+    }
+
+    setBusySolutionIds(selectedSummaries.map((solution) => solution.solutionId));
+    setIsProcessing(true);
+    setProcessing(selectedSummaries.map((solution) => ({ fileName: solution.displayName, progress: 0 })));
+    setStatusMsg(`Reading ${selectedSummaries.length} solution${selectedSummaries.length === 1 ? '' : 's'} from ${activeConnection.name}...`);
+
+    try {
+      const generatedResults: SolutionResult[] = [];
+
+      for (let index = 0; index < selectedSummaries.length; index += 1) {
+        const summary = selectedSummaries[index];
+
+        const solution = await buildParsedSolutionFromDataverse(summary.solutionId, ({ message, percent }) => {
+          setStatusMsg(message);
+          updateProcessingEntry(index, (entry) => ({ ...entry, progress: percent }));
+        });
+
+        const markdown = generateMarkdown(solution, { erdMode, documentContext });
+        generatedResults.push({
+          solution,
+          markdown,
+          fileName: `${summary.uniqueName}.dataverse`,
+          dataverseMetadataEnriched: false,
+        });
+
+        updateProcessingEntry(index, (entry) => ({ ...entry, progress: 100 }));
+      }
+
+      const existingBase = results.filter((entry) => !entry.isConsolidated);
+      const mergedBase = sortSolutionResults([...existingBase, ...generatedResults]);
+
+      let metadataEnrichedBase = mergedBase;
+      try {
+        const enrichedSolutions = await enrichSolutionsWithDataverseMetadata(
+          mergedBase.map((entry) => entry.solution),
+          ({ message }) => {
+            setStatusMsg(message);
+          },
+        );
+        metadataEnrichedBase = mergedBase.map((entry, index) => ({
+          ...entry,
+          solution: enrichedSolutions[index] ?? entry.solution,
+          dataverseMetadataEnriched: entry.fileName.endsWith('.dataverse')
+            ? true
+            : entry.dataverseMetadataEnriched,
+        }));
+      } catch (metadataError) {
+        const metadataMessage = metadataError instanceof Error
+          ? metadataError.message
+          : 'Unable to enrich selected solutions with Dataverse metadata.';
+        setStatusMsg(`Dataverse metadata enrichment warning: ${metadataMessage}`);
+      }
+
+      const nextResults = buildResultsWithCombinedDocument(metadataEnrichedBase, erdMode, documentContext);
+
+      setResults(nextResults);
+      setActiveIdx(getLastBaseResultIndex(nextResults));
+      setStatusMsg(`Documentation generated for ${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'}.`);
+      await showNotification(
+        'Documentation Ready',
+        `${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'} documented.`,
+        'success',
+        3000,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to read the selected solution.';
+      setProcessing((prev) => prev.map((entry) => ({ ...entry, error: message })));
+      setStatusMsg(`Failed to generate Dataverse documentation: ${message}`);
+      await showNotification('Dataverse Read Failed', message, 'error', 4000);
+    } finally {
+      setBusySolutionIds([]);
+      setIsProcessing(false);
+      setTimeout(() => setProcessing([]), 1500);
+    }
+  }, [
+    connection,
+    dataverseSolutions,
+    documentContext,
+    erdMode,
+    initializeConnection,
+    results,
+    selectedDataverseSolutionIds,
+    updateProcessingEntry,
+  ]);
+
+  const handleTogglePublisher = useCallback((publisher: string) => {
+    setSelectedPublishers((prev) => (
+      prev.includes(publisher)
+        ? prev.filter((entry) => entry !== publisher)
+        : [...prev, publisher]
+    ));
+  }, []);
+
+  const handleSelectAllPublishers = useCallback(() => {
+    const allPublishers = Array.from(new Set(
+      dataverseSolutions
+        .map((solution) => solution.publisherName?.trim())
+        .filter((name): name is string => Boolean(name)),
+    )).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
+    setSelectedPublishers(allPublishers);
+  }, [dataverseSolutions]);
+
+  const handleClearPublishers = useCallback(() => {
+    setSelectedPublishers([]);
+  }, []);
+
+  const handleToggleDataverseSolution = useCallback((solutionId: string) => {
+    setSelectedDataverseSolutionIds((prev) => (
+      prev.includes(solutionId)
+        ? prev.filter((id) => id !== solutionId)
+        : [...prev, solutionId]
+    ));
+  }, []);
+
+  const handleClearSelectedDataverseSolutions = useCallback(() => {
+    setSelectedDataverseSolutionIds([]);
+  }, []);
 
   const handleToggleErdMode = useCallback(() => {
     const nextMode: ErdMode = erdMode === 'detailed-relationships' ? 'compact' : 'detailed-relationships';
@@ -497,16 +859,43 @@ export default function App() {
   /**
    * Exports the active solution's Markdown as a downloadable .md file.
    */
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback(async () => {
     const result = results[activeIdx];
     if (!result) return;
-    const blob = new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' });
     const safeName = toSafeMarkdownBaseName(
       result.solution.metadata.displayName || result.solution.metadata.uniqueName,
       'solution',
     );
-    saveAs(blob, `${safeName}-documentation.md`);
+    try {
+      await exportMarkdown(result.markdown, `${safeName}-documentation`);
+      await showNotification('Export Successful', 'Markdown document exported successfully.', 'success', 3000);
+    } catch (error) {
+      console.error('Export failed:', error);
+      await showNotification('Export Failed', 'Failed to export markdown document.', 'error', 3000);
+    }
   }, [results, activeIdx]);
+
+  /**
+   * Exports the active solution's standalone dependency report.
+   */
+  const handleExportDependencyReport = useCallback(async () => {
+    const result = results[activeIdx];
+    if (!result) return;
+
+    const reportMarkdown = generateDependencyReportMarkdown(result.solution, { documentContext });
+    const safeName = toSafeMarkdownBaseName(
+      result.solution.metadata.displayName || result.solution.metadata.uniqueName,
+      'solution',
+    );
+
+    try {
+      await exportMarkdown(reportMarkdown, `${safeName}-dependency-report`);
+      await showNotification('Export Successful', 'Dependency report exported successfully.', 'success', 3000);
+    } catch (error) {
+      console.error('Dependency export failed:', error);
+      await showNotification('Export Failed', 'Failed to export dependency report.', 'error', 3000);
+    }
+  }, [results, activeIdx, documentContext]);
 
   /**
    * Exports all generated Markdown documents as a single ZIP archive.
@@ -514,20 +903,38 @@ export default function App() {
   const handleExportAll = useCallback(async () => {
     if (results.length === 0) return;
 
-    const zip = new JSZip();
-    results.forEach((result, idx) => {
-      const fallback = result.isConsolidated ? 'consolidated' : `solution_${idx + 1}`;
-      const safeName = toSafeMarkdownBaseName(
-        result.solution.metadata.displayName || result.solution.metadata.uniqueName,
-        fallback,
-      );
-      const suffix = result.isConsolidated ? '-summary.md' : '-documentation.md';
-      zip.file(`${safeName}${suffix}`, result.markdown);
-    });
+    try {
+      const zip = new JSZip();
+      results.forEach((result, idx) => {
+        const fallback = result.isConsolidated ? 'consolidated' : `solution_${idx + 1}`;
+        const safeName = toSafeMarkdownBaseName(
+          result.solution.metadata.displayName || result.solution.metadata.uniqueName,
+          fallback,
+        );
+        const suffix = result.isConsolidated ? '-summary.md' : '-documentation.md';
+        zip.file(`${safeName}${suffix}`, result.markdown);
 
-    const blob = await zip.generateAsync({ type: 'blob' });
-    saveAs(blob, 'pp-md-pptb-edition-markdown-documents.zip');
-  }, [results]);
+        if (includeDependencyReport && !result.isConsolidated) {
+          const reportMarkdown = generateDependencyReportMarkdown(result.solution, { documentContext });
+          zip.file(`${safeName}-dependency-report.md`, reportMarkdown);
+        }
+      });
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      await exportZip(blob, 'pp-md-pptb-edition-markdown-documents');
+      await showNotification(
+        'Export Successful',
+        includeDependencyReport
+          ? 'All markdown documents and dependency reports exported as ZIP.'
+          : 'All markdown documents exported as ZIP.',
+        'success',
+        3000,
+      );
+    } catch (error) {
+      console.error('Export all failed:', error);
+      await showNotification('Export Failed', 'Failed to export markdown documents as ZIP.', 'error', 3000);
+    }
+  }, [results, includeDependencyReport, documentContext]);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
 
@@ -544,8 +951,50 @@ export default function App() {
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const hasResults     = results.length > 0;
+  const combinedResultIndex = results.findIndex((entry) => entry.isConsolidated);
   const activeResult   = results[activeIdx];
-  const isWelcome      = !hasResults && !isProcessing;
+  const isWelcome      = launchMode === 'local' && !hasResults && !isProcessing;
+  const shouldShowModeSelection = launchMode === null && !hasResults && !isProcessing;
+  const shouldShowDataverseBrowser = launchMode === 'dataverse' && !hasResults && !isProcessing;
+  const publisherOptions = Array.from(new Set(
+    dataverseSolutions
+      .map((solution) => solution.publisherName?.trim())
+      .filter((name): name is string => Boolean(name)),
+  )).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
+
+  const filteredDataverseSolutions = dataverseSolutions
+    .filter((solution) => {
+      if (dataverseManagedFilter === 'managed' && !solution.isManaged) return false;
+      if (dataverseManagedFilter === 'unmanaged' && solution.isManaged) return false;
+      if (selectedPublishers.length > 0) {
+        const publisherName = solution.publisherName?.trim() || '';
+        if (!selectedPublishers.includes(publisherName)) return false;
+      }
+
+      const search = dataverseSearch.trim().toLowerCase();
+      if (!search) return true;
+      return solution.displayName.toLowerCase().includes(search)
+        || solution.uniqueName.toLowerCase().includes(search)
+        || solution.version.toLowerCase().includes(search)
+        || (solution.publisherName?.toLowerCase().includes(search) ?? false);
+    })
+    .sort((left, right) => {
+      switch (dataverseSort) {
+        case 'name-desc':
+          return right.displayName.localeCompare(left.displayName, undefined, { sensitivity: 'base' });
+        case 'version-asc':
+          return left.version.localeCompare(right.version, undefined, { sensitivity: 'base', numeric: true });
+        case 'version-desc':
+          return right.version.localeCompare(left.version, undefined, { sensitivity: 'base', numeric: true });
+        case 'name-asc':
+        default:
+          return left.displayName.localeCompare(right.displayName, undefined, { sensitivity: 'base' });
+      }
+    });
+
+  const handleSelectAllVisibleDataverseSolutions = useCallback(() => {
+    setSelectedDataverseSolutionIds(filteredDataverseSolutions.map((solution) => solution.solutionId));
+  }, [filteredDataverseSolutions]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -562,15 +1011,28 @@ export default function App() {
       {/* ── Global header ─────────────────────────────────────────────── */}
       <header className={styles.header} role="banner">
         <div className={styles.headerInner}>
-          {/* Logo / app name */}
-          <div className={styles.brand}>
-            <img src={appIcon} className={styles.brandIcon} alt="" aria-hidden="true" />
-            <h1 className={styles.brandName}>PP-MD - PPTB Edition</h1>
-            <span className={styles.brandTagline}>Power Platform Documentation Generator</span>
+          <div className={styles.headerLeft}>
+            <div className={styles.brand}>
+              <img src={appIcon} className={styles.brandIcon} alt="" aria-hidden="true" />
+              <div className={styles.brandCopy}>
+                <h1 className={styles.brandName}>PP-MD - PPTB Edition</h1>
+                <span className={styles.brandTagline}>Power Platform Documentation Generator</span>
+              </div>
+            </div>
           </div>
 
-          {/* Header actions */}
-          <div className={styles.headerActions}>
+          <div className={styles.headerCenter}>
+            <span className={styles.connectionText}>
+              {pptbLoading
+                ? 'Connecting to ToolBox...'
+                : (isInPPTB
+                  ? `Connected to: ${connection?.name ?? 'No active connection'}`
+                  : 'Running outside ToolBox (local dev mode)')}
+            </span>
+          </div>
+
+          <div className={styles.headerRight}>
+            <div className={styles.headerActions}>
             {hasResults && !isProcessing && (
               <button
                 type="button"
@@ -585,11 +1047,39 @@ export default function App() {
             {hasResults && !isProcessing && (
               <button
                 type="button"
+                className={`${styles.headerBtn} ${includeDependencyReport ? styles.headerBtnActive : ''}`}
+                onClick={() => {
+                  const next = !includeDependencyReport;
+                  setIncludeDependencyReport(next);
+                  setStatusMsg(next
+                    ? 'Standalone dependency report export enabled.'
+                    : 'Standalone dependency report export disabled.');
+                }}
+                aria-label="Toggle standalone dependency report export"
+              >
+                {includeDependencyReport ? 'Dependency Report: On' : 'Dependency Report: Off'}
+              </button>
+            )}
+
+            {hasResults && !isProcessing && includeDependencyReport && (
+              <button
+                type="button"
+                className={styles.headerBtn}
+                onClick={handleExportDependencyReport}
+                aria-label="Download standalone dependency report"
+              >
+                ⬇ Dependency .md
+              </button>
+            )}
+
+            {hasResults && !isProcessing && (
+              <button
+                type="button"
                 className={styles.headerBtn}
                 onClick={handleExportAll}
                 aria-label="Download all generated Markdown files"
               >
-                ⬇ All .md
+                {includeDependencyReport ? '⬇ All + Dependencies' : '⬇ All .md'}
               </button>
             )}
 
@@ -603,8 +1093,17 @@ export default function App() {
                 ＋ New
               </button>
             )}
-            <UpdateChecker />
-            <ThemeToggle />
+            {launchMode && (
+              <button
+                type="button"
+                className={styles.headerBtn}
+                onClick={handleReturnToModeSelection}
+                aria-label="Return to mode selection"
+              >
+                Change Mode
+              </button>
+            )}
+            </div>
           </div>
         </div>
       </header>
@@ -629,6 +1128,7 @@ export default function App() {
           <SolutionSidebar
             solutions={results.map((r) => r.solution)}
             activeIndex={activeIdx}
+            combinedIndex={combinedResultIndex}
             onSelect={handleSelectResult}
             onReset={handleReset}
           />
@@ -637,160 +1137,245 @@ export default function App() {
         {/* Main content */}
         <main id="main-content" className={styles.main} tabIndex={-1}>
 
-          {/* Welcome / drop zone screen */}
-          {isWelcome && (
+          {/* Launch mode / local / connected screens */}
+          {(shouldShowModeSelection || isWelcome || shouldShowDataverseBrowser) && (
             <section
               className={styles.welcomeSection}
               aria-labelledby="welcome-heading"
             >
-              <h2 id="welcome-heading" className={styles.welcomeHeading}>
-                Generate documentation from your solution files
-              </h2>
-              <p className={styles.welcomeSubtitle}>
-                Drop one or more Power Platform solution <code>.zip</code> archives below.
-                PP-MD - PPTB Edition will parse every component and produce comprehensive Markdown
-                documentation — including architecture and ERD Mermaid diagrams.
-              </p>
+              {shouldShowModeSelection ? (
+                <>
+                  <h2 id="welcome-heading" className={styles.welcomeHeading}>
+                    Choose how you want to document your solution
+                  </h2>
+                  <p className={styles.welcomeSubtitle}>
+                    Start with local ZIP files or connect to Dataverse and read solution metadata directly from the active environment.
+                  </p>
 
-              <section className={styles.contextPanel} aria-labelledby="context-heading">
-                <h3 id="context-heading" className={styles.contextHeading}>Document Header Details</h3>
+                  <div className={styles.modeGrid}>
+                    <button type="button" className={styles.modeCard} onClick={() => handleSelectLaunchMode('local')}>
+                      <span className={styles.modeCardTitle}>Local Solutions</span>
+                      <span className={styles.modeCardBody}>
+                        Upload one or more exported solution ZIP files. No active Dataverse connection is required.
+                      </span>
+                    </button>
 
-                <div className={styles.contextRow}>
-                  <label htmlFor="config-select" className={styles.contextLabel}>Configuration</label>
-                  <div className={styles.contextSelectRow}>
-                    <select
-                      id="config-select"
-                      className={styles.contextSelect}
-                      value={selectedConfigId}
-                      onChange={handleConfigurationSelect}
-                      aria-label="Select document configuration"
-                    >
-                      <option value="custom">Custom (manual entry)</option>
-                      {configurations.map((config) => (
-                        <option key={config.id} value={config.id}>{config.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className={styles.contextDeleteBtn}
-                      onClick={() => handleDeleteConfiguration(selectedConfigId)}
-                      disabled={selectedConfigId === 'custom'}
-                      aria-label="Delete selected configuration"
-                      title="Delete selected configuration"
-                    >
-                      🗑
+                    <button type="button" className={styles.modeCard} onClick={() => handleSelectLaunchMode('dataverse')}>
+                      <span className={styles.modeCardTitle}>Dataverse Connected</span>
+                      <span className={styles.modeCardBody}>
+                        Browse solutions from the currently active Power Platform ToolBox environment and generate documentation directly from Dataverse metadata.
+                      </span>
                     </button>
                   </div>
-                </div>
 
-                <div className={styles.contextSaveRow}>
-                  <input
-                    type="text"
-                    className={styles.contextNameInput}
-                    placeholder="Configuration name"
-                    value={newConfigName}
-                    onChange={(e) => setNewConfigName(e.target.value)}
-                    aria-label="Configuration name"
-                  />
-                  <button
-                    type="button"
-                    className={styles.contextSaveBtn}
-                    onClick={handleSaveConfiguration}
-                  >
-                    Save Configuration
-                  </button>
-                </div>
+                  <section className={styles.modeBranding} aria-label="Product details and links">
+                    <img src={appIcon} className={styles.modeBrandIcon} alt="PP-MD logo" />
+                    <p className={styles.modeBrandTitle}>Power Platform Markdown Document Generator</p>
+                    <p className={styles.modeBrandByline}>by Mike Hartley / Hart of the Midlands</p>
+                    <div className={styles.modeBrandLinks}>
+                      <a
+                        href={WEBSITE_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        onMouseDown={handleExternalLinkMouseDown}
+                        onClick={handleExternalLinkClick}
+                      >
+                        HartOfTheMidlands.co.uk
+                      </a>
+                      <a
+                        href={GITHUB_REPO_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={styles.iconLink}
+                        onMouseDown={handleExternalLinkMouseDown}
+                        onClick={handleExternalLinkClick}
+                      >
+                        <img src={githubMark} className={styles.linkIcon} alt="" aria-hidden="true" />
+                        <span>GitHub Repo</span>
+                      </a>
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <>
+                  <h2 id="welcome-heading" className={styles.welcomeHeading}>
+                    {launchMode === 'local'
+                      ? 'Generate documentation from your solution files'
+                      : 'Generate documentation from the active Dataverse environment'}
+                  </h2>
+                  <p className={styles.welcomeSubtitle}>
+                    {launchMode === 'local'
+                      ? 'Drop one or more Power Platform solution ZIP archives below. PP-MD - PPTB Edition will parse every component and produce comprehensive Markdown documentation — including architecture and ERD Mermaid diagrams.'
+                      : 'Choose a solution from the active environment. PP-MD - PPTB Edition reads metadata through Power Platform ToolBox and generates Markdown documentation without exporting or uploading the solution.'}
+                  </p>
 
-                {configLoadError && (
-                  <p className={styles.contextWarning} role="alert">⚠ {configLoadError}</p>
-                )}
+                  <section className={styles.contextPanel} aria-labelledby="context-heading">
+                    <h3 id="context-heading" className={styles.contextHeading}>Document Header Details</h3>
 
-                <div className={styles.contextGrid}>
-                  <label className={styles.contextField}>
-                    <span>Client</span>
-                    <input
-                      type="text"
-                      value={documentContext.client}
-                      onChange={(e) => handleContextChange('client', e.target.value)}
-                    />
-                  </label>
-                  <label className={styles.contextField}>
-                    <span>Contract</span>
-                    <input
-                      type="text"
-                      value={documentContext.contract}
-                      onChange={(e) => handleContextChange('contract', e.target.value)}
-                    />
-                  </label>
-                  <label className={styles.contextField}>
-                    <span>Contract ID/SoW</span>
-                    <input
-                      type="text"
-                      value={documentContext.sow}
-                      onChange={(e) => handleContextChange('sow', e.target.value)}
-                    />
-                  </label>
-                  <label className={styles.contextField}>
-                    <span>Project</span>
-                    <input
-                      type="text"
-                      value={documentContext.project}
-                      onChange={(e) => handleContextChange('project', e.target.value)}
-                    />
-                  </label>
-                  <label className={styles.contextField}>
-                    <span>Sprint</span>
-                    <input
-                      type="text"
-                      value={documentContext.sprint}
-                      onChange={(e) => handleContextChange('sprint', e.target.value)}
-                    />
-                  </label>
-                  <label className={styles.contextField}>
-                    <span>Release Date</span>
-                    <input
-                      type="date"
-                      value={documentContext.releaseDate}
-                      onChange={(e) => handleContextChange('releaseDate', e.target.value)}
-                    />
-                  </label>
-                </div>
+                    <div className={styles.contextRow}>
+                      <label htmlFor="config-select" className={styles.contextLabel}>Configuration</label>
+                      <div className={styles.contextSelectRow}>
+                        <select
+                          id="config-select"
+                          className={styles.contextSelect}
+                          value={selectedConfigId}
+                          onChange={handleConfigurationSelect}
+                          aria-label="Select document configuration"
+                        >
+                          <option value="custom">Custom (manual entry)</option>
+                          {configurations.map((config) => (
+                            <option key={config.id} value={config.id}>{config.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className={styles.contextDeleteBtn}
+                          onClick={() => handleDeleteConfiguration(selectedConfigId)}
+                          disabled={selectedConfigId === 'custom'}
+                          aria-label="Delete selected configuration"
+                          title="Delete selected configuration"
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    </div>
 
-              </section>
+                    <div className={styles.contextSaveRow}>
+                      <input
+                        type="text"
+                        className={styles.contextNameInput}
+                        placeholder="Configuration name"
+                        value={newConfigName}
+                        onChange={(e) => setNewConfigName(e.target.value)}
+                        aria-label="Configuration name"
+                      />
+                      <button
+                        type="button"
+                        className={styles.contextSaveBtn}
+                        onClick={handleSaveConfiguration}
+                      >
+                        Save Configuration
+                      </button>
+                    </div>
 
-              <div className={styles.dropZoneWrapper}>
-                <DropZone
-                  onFilesSelected={handleFilesSelected}
-                  disabled={isProcessing}
-                />
-              </div>
+                    {configLoadError && (
+                      <p className={styles.contextWarning} role="alert">⚠ {configLoadError}</p>
+                    )}
 
-              {/* Features list */}
-              <section
-                className={styles.featureGrid}
-                aria-labelledby="features-heading"
-              >
-                <h3 id="features-heading" className="sr-only">Supported components</h3>
-                {[
-                  { icon: '🗃️', label: 'Tables & Columns'         },
-                  { icon: '📋', label: 'Forms & Views'             },
-                  { icon: '⚙️', label: 'Power Automate Flows'      },
-                  { icon: '🔄', label: 'Classic Workflows & BPFs'  },
-                  { icon: '🎨', label: 'Canvas & Model Apps'       },
-                  { icon: '🌐', label: 'Web Resources (JS/TS/HTML)'},
-                  { icon: '🔒', label: 'Security Roles & CLS'      },
-                  { icon: '🔌', label: 'Plugins & Plugin Steps'    },
-                  { icon: '🔗', label: 'Connection References'      },
-                  { icon: '⚙️', label: 'Environment Variables'     },
-                  { icon: '📊', label: 'Reports & Dashboards'      },
-                  { icon: '📈', label: 'Mermaid Diagrams'          },
-                ].map(({ icon, label }) => (
-                  <div key={label} className={styles.featureCard}>
-                    <span className={styles.featureIcon} aria-hidden="true">{icon}</span>
-                    <span className={styles.featureLabel}>{label}</span>
-                  </div>
-                ))}
-              </section>
+                    <div className={styles.contextGrid}>
+                      <label className={styles.contextField}>
+                        <span>Client</span>
+                        <input
+                          type="text"
+                          value={documentContext.client}
+                          onChange={(e) => handleContextChange('client', e.target.value)}
+                        />
+                      </label>
+                      <label className={styles.contextField}>
+                        <span>Contract</span>
+                        <input
+                          type="text"
+                          value={documentContext.contract}
+                          onChange={(e) => handleContextChange('contract', e.target.value)}
+                        />
+                      </label>
+                      <label className={styles.contextField}>
+                        <span>Contract ID/SoW</span>
+                        <input
+                          type="text"
+                          value={documentContext.sow}
+                          onChange={(e) => handleContextChange('sow', e.target.value)}
+                        />
+                      </label>
+                      <label className={styles.contextField}>
+                        <span>Project</span>
+                        <input
+                          type="text"
+                          value={documentContext.project}
+                          onChange={(e) => handleContextChange('project', e.target.value)}
+                        />
+                      </label>
+                      <label className={styles.contextField}>
+                        <span>Sprint</span>
+                        <input
+                          type="text"
+                          value={documentContext.sprint}
+                          onChange={(e) => handleContextChange('sprint', e.target.value)}
+                        />
+                      </label>
+                      <label className={styles.contextField}>
+                        <span>Release Date</span>
+                        <input
+                          type="date"
+                          value={documentContext.releaseDate}
+                          onChange={(e) => handleContextChange('releaseDate', e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  </section>
+
+                  {launchMode === 'local' ? (
+                    <>
+                      <div className={styles.dropZoneWrapper}>
+                        <DropZone
+                          onFilesSelected={handleFilesSelected}
+                          disabled={isProcessing}
+                        />
+                      </div>
+
+                      <section
+                        className={styles.featureGrid}
+                        aria-labelledby="features-heading"
+                      >
+                        <h3 id="features-heading" className="sr-only">Supported components</h3>
+                        {[
+                          { icon: '🗃️', label: 'Tables & Columns' },
+                          { icon: '📋', label: 'Forms & Views' },
+                          { icon: '⚙️', label: 'Power Automate Flows' },
+                          { icon: '🔄', label: 'Classic Workflows & BPFs' },
+                          { icon: '🎨', label: 'Canvas & Model Apps' },
+                          { icon: '🌐', label: 'Web Resources (JS/TS/HTML)' },
+                          { icon: '🔒', label: 'Security Roles & CLS' },
+                          { icon: '🔌', label: 'Plugins & Plugin Steps' },
+                          { icon: '🔗', label: 'Connection References' },
+                          { icon: '⚙️', label: 'Environment Variables' },
+                          { icon: '📊', label: 'Reports & Dashboards' },
+                          { icon: '📈', label: 'Mermaid Diagrams' },
+                        ].map(({ icon, label }) => (
+                          <div key={label} className={styles.featureCard}>
+                            <span className={styles.featureIcon} aria-hidden="true">{icon}</span>
+                            <span className={styles.featureLabel}>{label}</span>
+                          </div>
+                        ))}
+                      </section>
+                    </>
+                  ) : (
+                    <DataverseSolutionBrowser
+                      solutions={filteredDataverseSolutions}
+                      publisherOptions={publisherOptions}
+                      selectedPublishers={selectedPublishers}
+                      selectedSolutionIds={selectedDataverseSolutionIds}
+                      search={dataverseSearch}
+                      sort={dataverseSort}
+                      managedFilter={dataverseManagedFilter}
+                      isLoading={isDataverseLoading}
+                      error={dataverseError}
+                      busySolutionIds={busySolutionIds}
+                      onSearchChange={setDataverseSearch}
+                      onSortChange={setDataverseSort}
+                      onManagedFilterChange={setDataverseManagedFilter}
+                      onTogglePublisher={handleTogglePublisher}
+                      onSelectAllPublishers={handleSelectAllPublishers}
+                      onClearPublishers={handleClearPublishers}
+                      onToggleSolution={handleToggleDataverseSolution}
+                      onSelectAllVisibleSolutions={handleSelectAllVisibleDataverseSolutions}
+                      onClearSelectedSolutions={handleClearSelectedDataverseSolutions}
+                      onRefresh={() => { void loadDataverseSolutions(); }}
+                      onGenerateSelected={handleGenerateSelectedDataverseSolutions}
+                    />
+                  )}
+                </>
+              )}
             </section>
           )}
 
@@ -865,8 +1450,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Additional file drop zone when results exist */}
-          {hasResults && !isProcessing && (
+          {/* Additional local file drop zone when results exist */}
+          {hasResults && !isProcessing && launchMode === 'local' && (
             <details className={styles.addMoreDetails}>
               <summary className={styles.addMoreSummary}>
                 ＋ Add more solution files
@@ -879,15 +1464,90 @@ export default function App() {
               </div>
             </details>
           )}
+
+          {/* Additional Dataverse browser when results exist */}
+          {hasResults && !isProcessing && launchMode === 'dataverse' && (
+            <details className={styles.addMoreDetails}>
+              <summary className={styles.addMoreSummary}>
+                ＋ Add more solutions from Dataverse
+              </summary>
+              <div className={styles.addMoreBody}>
+                <DataverseSolutionBrowser
+                  solutions={filteredDataverseSolutions}
+                  publisherOptions={publisherOptions}
+                  selectedPublishers={selectedPublishers}
+                  selectedSolutionIds={selectedDataverseSolutionIds}
+                  search={dataverseSearch}
+                  sort={dataverseSort}
+                  managedFilter={dataverseManagedFilter}
+                  isLoading={isDataverseLoading}
+                  error={dataverseError}
+                  busySolutionIds={busySolutionIds}
+                  onSearchChange={setDataverseSearch}
+                  onSortChange={setDataverseSort}
+                  onManagedFilterChange={setDataverseManagedFilter}
+                  onTogglePublisher={handleTogglePublisher}
+                  onSelectAllPublishers={handleSelectAllPublishers}
+                  onClearPublishers={handleClearPublishers}
+                  onToggleSolution={handleToggleDataverseSolution}
+                  onSelectAllVisibleSolutions={handleSelectAllVisibleDataverseSolutions}
+                  onClearSelectedSolutions={handleClearSelectedDataverseSolutions}
+                  onRefresh={() => { void loadDataverseSolutions(); }}
+                  onGenerateSelected={handleGenerateSelectedDataverseSolutions}
+                />
+              </div>
+            </details>
+          )}
         </main>
       </div>
 
+      {invalidArchiveMessage && (
+        <div className={styles.modalBackdrop} role="presentation">
+          <div
+            className={styles.modalDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="invalid-archive-title"
+            aria-describedby="invalid-archive-body"
+          >
+            <h2 id="invalid-archive-title" className={styles.modalTitle}>Invalid ZIP Archive</h2>
+            <p id="invalid-archive-body" className={styles.modalBody}>{invalidArchiveMessage}</p>
+            <button
+              ref={invalidArchiveOkRef}
+              type="button"
+              className={styles.modalOkBtn}
+              onClick={() => setInvalidArchiveMessage(null)}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Footer ────────────────────────────────────────────────────── */}
       <footer className={styles.footer} role="contentinfo">
-        <p>
-          PP-MD - PPTB Edition: Power Platform Documentation Generator. Created by Mike Hartley - Hart of the Midlands.
-          All processing happens locally on your PC; your solution data never leaves your machine.
-        </p>
+        <div className={styles.footerLeft}>
+          <span>PP-MD - PPTB Edition: Power Platform Documentation Generator.</span>
+          <span className={styles.footerVersion}>Version {displayVersion}</span>
+          <a
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noreferrer"
+            className={styles.iconLink}
+            onMouseDown={handleExternalLinkMouseDown}
+            onClick={handleExternalLinkClick}
+          >
+            <img src={githubMark} className={styles.linkIcon} alt="" aria-hidden="true" />
+            <span>GitHub Repo</span>
+          </a>
+        </div>
+        <div className={styles.footerRight}>
+          <span>
+            {launchMode === 'dataverse'
+              ? 'PP-MD - PPTB Edition reads solution metadata from the active Dataverse environment through Power Platform ToolBox. No information is uploaded to the environment and only solution data is retrieved in read-only mode.'
+              : 'All local ZIP processing happens on your PC; your solution data never leaves your machine.'}
+          </span>
+        </div>
       </footer>
     </div>
   );

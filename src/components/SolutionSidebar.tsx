@@ -19,6 +19,8 @@ export interface SolutionSidebarProps {
   solutions: ParsedSolution[];
   /** Index of the currently visible solution */
   activeIndex: number;
+  /** Optional index of the combined "All Selected Solutions" document */
+  combinedIndex?: number;
   /** Callback when the user selects a solution */
   onSelect: (index: number) => void;
   /** Callback to clear all solutions and return to the drop zone */
@@ -31,6 +33,7 @@ export interface SolutionSidebarProps {
 export function SolutionSidebar({
   solutions,
   activeIndex,
+  combinedIndex = -1,
   onSelect,
   onReset,
 }: SolutionSidebarProps) {
@@ -59,6 +62,8 @@ export function SolutionSidebar({
       {/* Solution list */}
       <ul className={styles.list} role="list">
         {solutions.map((sol, idx) => {
+          if (idx === combinedIndex) return null;
+
           const isActive  = idx === activeIndex;
           const itemClass = [styles.item, isActive ? styles.active : ''].filter(Boolean).join(' ');
 
@@ -85,6 +90,21 @@ export function SolutionSidebar({
           );
         })}
       </ul>
+
+      {combinedIndex >= 0 && solutions[combinedIndex] && (
+        <div className={styles.combinedLinkPanel}>
+          <button
+            type="button"
+            className={[styles.item, styles.combinedItem, activeIndex === combinedIndex ? styles.active : ''].filter(Boolean).join(' ')}
+            onClick={() => onSelect(combinedIndex)}
+            aria-current={activeIndex === combinedIndex ? 'page' : undefined}
+            aria-label="View combined documentation for all selected solutions"
+          >
+            <span className={styles.solIcon} aria-hidden="true">🧩</span>
+            <span className={styles.solName}>All Selected Solutions</span>
+          </button>
+        </div>
+      )}
 
       {/* Summary counts */}
       {solutions[activeIndex] && (

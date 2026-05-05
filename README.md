@@ -37,7 +37,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 
 ## Documentation Coverage
 
-PP-MD generates documentation for:
+PP-MD generates Markdown documentation including:
 
 - Dataverse tables, attributes, and relationships
 - Mermaid ERD output
@@ -50,7 +50,7 @@ PP-MD generates documentation for:
 - Reports, dashboards, and web resources
 - Consolidated summary across multiple solutions
 
-## How To Use In ToolBox
+## How To Use In Power Platform ToolBox
 
 1. Open PP-MD in Power Platform ToolBox.
 2. Choose a launch mode:
@@ -59,7 +59,7 @@ PP-MD generates documentation for:
 3. Optionally set document header fields (client, contract, project, sprint, release date).
 4. Generate documentation.
 5. Review in the built-in Markdown viewer.
-6. Export single files, all files, or include dependency reports.
+6. Export single files, all files, and include dependency reports.
 
 ## Dataverse Connected Mode Workflow
 
@@ -69,8 +69,6 @@ PP-MD generates documentation for:
 4. Select one or more solutions.
 5. Generate selected documentation.
 6. Export Markdown output.
-
-If there is no active Dataverse connection, PP-MD shows a guidance message and does not attempt write operations.
 
 ## Local Solutions Mode Workflow
 
