@@ -76,6 +76,12 @@ interface SolutionResult {
 type ErdMode = 'compact' | 'detailed-relationships';
 type LaunchMode = 'local' | 'dataverse';
 
+interface GenerationPreferences {
+  erdMode: ErdMode;
+  includeDiagrams: boolean;
+  includeDefaultColumns: boolean;
+}
+
 interface SavedDocumentConfiguration extends DocumentContext {
   id: string;
   name: string;
@@ -187,7 +193,7 @@ function writeHiddenConfigurationIds(ids: string[]): void {
 
 function buildConsolidatedResult(
   results: SolutionResult[],
-  erdMode: ErdMode,
+  generationPreferences: GenerationPreferences,
   documentContext: DocumentContext,
 ): SolutionResult {
   const solutions = results.map((r) => r.solution);
@@ -196,8 +202,19 @@ function buildConsolidatedResult(
     peerGapFillApplied: results.some((result) => result.peerGapFillApplied),
     dataverseMetadataEnriched: results.some((result) => result.dataverseMetadataEnriched),
   };
-  const summaryMarkdown = generateConsolidatedMarkdown(solutions, { documentContext, enrichmentIndicators: indicators });
-  const detailedMarkdown = generateMarkdown(aggregated, { erdMode, documentContext, enrichmentIndicators: indicators });
+  const summaryMarkdown = generateConsolidatedMarkdown(solutions, {
+    documentContext,
+    enrichmentIndicators: indicators,
+    includeDiagrams: generationPreferences.includeDiagrams,
+    includeDefaultColumns: generationPreferences.includeDefaultColumns,
+  });
+  const detailedMarkdown = generateMarkdown(aggregated, {
+    erdMode: generationPreferences.erdMode,
+    documentContext,
+    enrichmentIndicators: indicators,
+    includeDiagrams: generationPreferences.includeDiagrams,
+    includeDefaultColumns: generationPreferences.includeDefaultColumns,
+  });
   const markdown = `${summaryMarkdown}\n\n---\n\n${detailedMarkdown}`;
 
   return {
@@ -212,7 +229,7 @@ function buildConsolidatedResult(
 
 function buildResultsWithCombinedDocument(
   baseResults: SolutionResult[],
-  erdMode: ErdMode,
+  generationPreferences: GenerationPreferences,
   documentContext: DocumentContext,
 ): SolutionResult[] {
   const sortedBase = sortSolutionResults(baseResults
@@ -229,8 +246,10 @@ function buildResultsWithCombinedDocument(
       solution: enrichedSolution,
       peerGapFillApplied: peerSolutions.length > 0,
       markdown: generateMarkdown(enrichedSolution, {
-        erdMode,
+        erdMode: generationPreferences.erdMode,
         documentContext,
+        includeDiagrams: generationPreferences.includeDiagrams,
+        includeDefaultColumns: generationPreferences.includeDefaultColumns,
         enrichmentIndicators: resultEnrichmentIndicators({
           peerGapFillApplied: peerSolutions.length > 0,
           dataverseMetadataEnriched: entry.dataverseMetadataEnriched,
@@ -240,7 +259,7 @@ function buildResultsWithCombinedDocument(
   });
 
   if (enrichedBase.length > 1) {
-    return [...enrichedBase, buildConsolidatedResult(enrichedBase, erdMode, documentContext)];
+    return [...enrichedBase, buildConsolidatedResult(enrichedBase, generationPreferences, documentContext)];
   }
 
   return enrichedBase;
@@ -257,11 +276,11 @@ function getLastBaseResultIndex(items: SolutionResult[]): number {
 
 function rebuildResults(
   results: SolutionResult[],
-  erdMode: ErdMode,
+  generationPreferences: GenerationPreferences,
   documentContext: DocumentContext,
 ): SolutionResult[] {
   const base = results.filter((entry) => !entry.isConsolidated);
-  return buildResultsWithCombinedDocument(base, erdMode, documentContext);
+  return buildResultsWithCombinedDocument(base, generationPreferences, documentContext);
 }
 
 /**
@@ -306,6 +325,10 @@ export default function App() {
   const [statusMsg,     setStatusMsg]     = useState<string>('');
   /** ERD rendering mode */
   const [erdMode,       setErdMode]       = useState<ErdMode>('detailed-relationships');
+  /** Include diagram sections in generated markdown */
+  const [includeDiagrams, setIncludeDiagrams] = useState<boolean>(true);
+  /** Include default/system columns in table documentation */
+  const [includeDefaultColumns, setIncludeDefaultColumns] = useState<boolean>(true);
   /** Document context for MD header details */
   const [documentContext, setDocumentContext] = useState<DocumentContext>(EMPTY_DOCUMENT_CONTEXT);
   /** Preset configurations loaded from JSON */
@@ -338,11 +361,21 @@ export default function App() {
   const [selectedDataverseSolutionIds, setSelectedDataverseSolutionIds] = useState<string[]>([]);
   /** Dataverse solution IDs currently being processed */
   const [busySolutionIds, setBusySolutionIds] = useState<string[]>([]);
+  /** ZIP files queued in local mode drop zone */
+  const [queuedLocalFiles, setQueuedLocalFiles] = useState<File[]>([]);
+  /** Forces DropZone queue reset after generation or mode changes */
+  const [dropZoneResetToken, setDropZoneResetToken] = useState<number>(0);
   /** Blocking invalid ZIP modal message */
   const [invalidArchiveMessage, setInvalidArchiveMessage] = useState<string | null>(null);
   /** Whether standalone dependency report export is enabled */
   const [includeDependencyReport, setIncludeDependencyReport] = useState<boolean>(false);
   const invalidArchiveOkRef = useRef<HTMLButtonElement | null>(null);
+
+  const generationPreferences: GenerationPreferences = {
+    erdMode,
+    includeDiagrams,
+    includeDefaultColumns,
+  };
 
   /**
    * Guard against host click-through on startup opening external links.
@@ -447,8 +480,8 @@ export default function App() {
       sprint: nextDocumentContext.sprint,
       releaseDate: nextDocumentContext.releaseDate,
     });
-    setResults((prev) => rebuildResults(prev, erdMode, nextDocumentContext));
-  }, [erdMode]);
+    setResults((prev) => rebuildResults(prev, generationPreferences, nextDocumentContext));
+  }, [generationPreferences]);
 
   const handleConfigurationSelect = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     const value = event.target.value;
@@ -464,8 +497,8 @@ export default function App() {
     const nextDocumentContext = { ...documentContext, [field]: value };
     setSelectedConfigId('custom');
     setDocumentContext(nextDocumentContext);
-    setResults((prev) => rebuildResults(prev, erdMode, nextDocumentContext));
-  }, [documentContext, erdMode]);
+    setResults((prev) => rebuildResults(prev, generationPreferences, nextDocumentContext));
+  }, [documentContext, generationPreferences]);
 
   const handleSaveConfiguration = useCallback(() => {
     const name = newConfigName.trim();
@@ -568,6 +601,8 @@ export default function App() {
     setIsProcessing(false);
     setDataverseError('');
     setSelectedDataverseSolutionIds([]);
+    setQueuedLocalFiles([]);
+    setDropZoneResetToken((prev) => prev + 1);
     setStatusMsg(mode === 'local'
       ? 'Local Solutions mode selected. Upload one or more solution ZIP files to continue.'
       : 'Dataverse Connected mode selected. Choose a solution from the active environment to continue.');
@@ -585,6 +620,8 @@ export default function App() {
     setBusySolutionIds([]);
     setSelectedPublishers([]);
     setSelectedDataverseSolutionIds([]);
+    setQueuedLocalFiles([]);
+    setDropZoneResetToken((prev) => prev + 1);
     setInvalidArchiveMessage(null);
     setStatusMsg('Choose how you want to generate solution documentation.');
   }, []);
@@ -637,7 +674,12 @@ export default function App() {
         });
 
         setStatusMsg(`Generating documentation for ${file.name}…`);
-        const markdown = generateMarkdown(solution, { erdMode, documentContext });
+        const markdown = generateMarkdown(solution, {
+          erdMode,
+          documentContext,
+          includeDiagrams,
+          includeDefaultColumns,
+        });
 
         newResults.push({ solution, markdown, fileName: file.name });
 
@@ -656,7 +698,7 @@ export default function App() {
     if (newResults.length > 0) {
       const existingBase = results.filter((r) => !r.isConsolidated);
       const mergedBase = [...existingBase, ...newResults];
-      const nextResults = buildResultsWithCombinedDocument(mergedBase, erdMode, documentContext);
+      const nextResults = buildResultsWithCombinedDocument(mergedBase, generationPreferences, documentContext);
 
       setResults(nextResults);
       setActiveIdx(getLastBaseResultIndex(nextResults));
@@ -681,7 +723,15 @@ export default function App() {
     }
     // Clear progress indicators after a brief delay
     setTimeout(() => setProcessing([]), 1500);
-  }, [results, erdMode, documentContext, updateProcessingEntry]);
+  }, [
+    results,
+    erdMode,
+    documentContext,
+    includeDiagrams,
+    includeDefaultColumns,
+    generationPreferences,
+    updateProcessingEntry,
+  ]);
 
   const handleGenerateSelectedDataverseSolutions = useCallback(async () => {
     if (selectedDataverseSolutionIds.length === 0) {
@@ -719,7 +769,12 @@ export default function App() {
           updateProcessingEntry(index, (entry) => ({ ...entry, progress: percent }));
         });
 
-        const markdown = generateMarkdown(solution, { erdMode, documentContext });
+        const markdown = generateMarkdown(solution, {
+          erdMode,
+          documentContext,
+          includeDiagrams,
+          includeDefaultColumns,
+        });
         generatedResults.push({
           solution,
           markdown,
@@ -755,7 +810,7 @@ export default function App() {
         setStatusMsg(`Dataverse metadata enrichment warning: ${metadataMessage}`);
       }
 
-      const nextResults = buildResultsWithCombinedDocument(metadataEnrichedBase, erdMode, documentContext);
+      const nextResults = buildResultsWithCombinedDocument(metadataEnrichedBase, generationPreferences, documentContext);
 
       setResults(nextResults);
       setActiveIdx(getLastBaseResultIndex(nextResults));
@@ -781,6 +836,9 @@ export default function App() {
     dataverseSolutions,
     documentContext,
     erdMode,
+    includeDiagrams,
+    includeDefaultColumns,
+    generationPreferences,
     initializeConnection,
     results,
     selectedDataverseSolutionIds,
@@ -823,11 +881,52 @@ export default function App() {
   const handleToggleErdMode = useCallback(() => {
     const nextMode: ErdMode = erdMode === 'detailed-relationships' ? 'compact' : 'detailed-relationships';
 
-    setResults((prev) => rebuildResults(prev, nextMode, documentContext));
+    const nextPreferences: GenerationPreferences = {
+      ...generationPreferences,
+      erdMode: nextMode,
+    };
+
+    setResults((prev) => rebuildResults(prev, nextPreferences, documentContext));
 
     setErdMode(nextMode);
     setStatusMsg(`ERD mode switched to ${nextMode === 'compact' ? 'Compact' : 'Detailed-Relationships'}.`);
-  }, [erdMode, documentContext]);
+  }, [erdMode, documentContext, generationPreferences]);
+
+  const handleToggleIncludeDiagrams = useCallback(() => {
+    const nextIncludeDiagrams = !includeDiagrams;
+    const nextPreferences: GenerationPreferences = {
+      ...generationPreferences,
+      includeDiagrams: nextIncludeDiagrams,
+    };
+
+    setIncludeDiagrams(nextIncludeDiagrams);
+    setResults((prev) => rebuildResults(prev, nextPreferences, documentContext));
+    setStatusMsg(nextIncludeDiagrams
+      ? 'Generate Diagrams enabled.'
+      : 'Generate Diagrams disabled. Diagram sections will be excluded.');
+  }, [includeDiagrams, generationPreferences, documentContext]);
+
+  const handleToggleIncludeDefaultColumns = useCallback(() => {
+    const nextIncludeDefaultColumns = !includeDefaultColumns;
+    const nextPreferences: GenerationPreferences = {
+      ...generationPreferences,
+      includeDefaultColumns: nextIncludeDefaultColumns,
+    };
+
+    setIncludeDefaultColumns(nextIncludeDefaultColumns);
+    setResults((prev) => rebuildResults(prev, nextPreferences, documentContext));
+    setStatusMsg(nextIncludeDefaultColumns
+      ? 'Include Default Columns enabled.'
+      : 'Include Default Columns disabled. Default/system columns will be excluded.');
+  }, [includeDefaultColumns, generationPreferences, documentContext]);
+
+  const handleGenerateLocalQueuedSolutions = useCallback(() => {
+    if (isProcessing || queuedLocalFiles.length === 0) return;
+    const filesToGenerate = sortFilesByName(queuedLocalFiles);
+    setQueuedLocalFiles([]);
+    setDropZoneResetToken((prev) => prev + 1);
+    void handleFilesSelected(filesToGenerate);
+  }, [isProcessing, queuedLocalFiles, handleFilesSelected]);
 
   /**
    * Handles sidebar document selection with optional loading feedback for
@@ -945,12 +1044,16 @@ export default function App() {
     setResults([]);
     setActiveIdx(0);
     setProcessing([]);
+    setQueuedLocalFiles([]);
+    setDropZoneResetToken((prev) => prev + 1);
     setStatusMsg('');
   }, []);
 
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const hasResults     = results.length > 0;
+  const canGenerateLocal = launchMode === 'local' && queuedLocalFiles.length > 0 && !isProcessing;
+  const canGenerateDataverse = launchMode === 'dataverse' && selectedDataverseSolutionIds.length > 0 && busySolutionIds.length === 0 && !isProcessing;
   const combinedResultIndex = results.findIndex((entry) => entry.isConsolidated);
   const activeResult   = results[activeIdx];
   const isWelcome      = launchMode === 'local' && !hasResults && !isProcessing;
@@ -1314,12 +1417,66 @@ export default function App() {
                     </div>
                   </section>
 
+                  <section className={styles.generatePanel} aria-labelledby="generate-doc-heading">
+                    <div className={styles.generatePanelHeader}>
+                      <h3 id="generate-doc-heading" className={styles.generatePanelHeading}>Generate Documentation</h3>
+                      <p className={styles.generatePanelSubtitle}>
+                        Use one shared generation action for the selected mode and choose what to include in output.
+                      </p>
+                    </div>
+
+                    <div className={styles.generatePanelActions}>
+                      {launchMode === 'local' ? (
+                        <button
+                          type="button"
+                          className={styles.generatePrimaryBtn}
+                          onClick={handleGenerateLocalQueuedSolutions}
+                          disabled={!canGenerateLocal}
+                          aria-label={`Generate documentation for ${queuedLocalFiles.length} queued file${queuedLocalFiles.length === 1 ? '' : 's'}`}
+                        >
+                          Generate Documentation ({queuedLocalFiles.length})
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={styles.generatePrimaryBtn}
+                          onClick={handleGenerateSelectedDataverseSolutions}
+                          disabled={!canGenerateDataverse}
+                          aria-label={`Generate documentation for ${selectedDataverseSolutionIds.length} selected Dataverse solution${selectedDataverseSolutionIds.length === 1 ? '' : 's'}`}
+                        >
+                          Generate Selected ({selectedDataverseSolutionIds.length})
+                        </button>
+                      )}
+
+                      <label className={styles.generateToggle}>
+                        <input
+                          type="checkbox"
+                          checked={includeDiagrams}
+                          onChange={handleToggleIncludeDiagrams}
+                        />
+                        <span>Generate Diagrams</span>
+                      </label>
+
+                      <label className={styles.generateToggle}>
+                        <input
+                          type="checkbox"
+                          checked={includeDefaultColumns}
+                          onChange={handleToggleIncludeDefaultColumns}
+                        />
+                        <span>Include Default Columns</span>
+                      </label>
+                    </div>
+                  </section>
+
                   {launchMode === 'local' ? (
                     <>
                       <div className={styles.dropZoneWrapper}>
                         <DropZone
                           onFilesSelected={handleFilesSelected}
                           disabled={isProcessing}
+                          onQueueChange={setQueuedLocalFiles}
+                          showGenerateButton={false}
+                          resetToken={dropZoneResetToken}
                         />
                       </div>
 
@@ -1371,7 +1528,6 @@ export default function App() {
                       onSelectAllVisibleSolutions={handleSelectAllVisibleDataverseSolutions}
                       onClearSelectedSolutions={handleClearSelectedDataverseSolutions}
                       onRefresh={() => { void loadDataverseSolutions(); }}
-                      onGenerateSelected={handleGenerateSelectedDataverseSolutions}
                     />
                   )}
                 </>
@@ -1450,6 +1606,57 @@ export default function App() {
             </div>
           )}
 
+          {hasResults && !isProcessing && launchMode && (
+            <section className={styles.generatePanel} aria-labelledby="generate-more-heading">
+              <div className={styles.generatePanelHeader}>
+                <h3 id="generate-more-heading" className={styles.generatePanelHeading}>Generate More Documentation</h3>
+                <p className={styles.generatePanelSubtitle}>
+                  Apply generation settings and create additional documents from your current mode.
+                </p>
+              </div>
+
+              <div className={styles.generatePanelActions}>
+                {launchMode === 'local' ? (
+                  <button
+                    type="button"
+                    className={styles.generatePrimaryBtn}
+                    onClick={handleGenerateLocalQueuedSolutions}
+                    disabled={!canGenerateLocal}
+                  >
+                    Generate Documentation ({queuedLocalFiles.length})
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.generatePrimaryBtn}
+                    onClick={handleGenerateSelectedDataverseSolutions}
+                    disabled={!canGenerateDataverse}
+                  >
+                    Generate Selected ({selectedDataverseSolutionIds.length})
+                  </button>
+                )}
+
+                <label className={styles.generateToggle}>
+                  <input
+                    type="checkbox"
+                    checked={includeDiagrams}
+                    onChange={handleToggleIncludeDiagrams}
+                  />
+                  <span>Generate Diagrams</span>
+                </label>
+
+                <label className={styles.generateToggle}>
+                  <input
+                    type="checkbox"
+                    checked={includeDefaultColumns}
+                    onChange={handleToggleIncludeDefaultColumns}
+                  />
+                  <span>Include Default Columns</span>
+                </label>
+              </div>
+            </section>
+          )}
+
           {/* Additional local file drop zone when results exist */}
           {hasResults && !isProcessing && launchMode === 'local' && (
             <details className={styles.addMoreDetails}>
@@ -1460,6 +1667,9 @@ export default function App() {
                 <DropZone
                   onFilesSelected={handleFilesSelected}
                   disabled={isProcessing}
+                  onQueueChange={setQueuedLocalFiles}
+                  showGenerateButton={false}
+                  resetToken={dropZoneResetToken}
                 />
               </div>
             </details>
@@ -1493,7 +1703,6 @@ export default function App() {
                   onSelectAllVisibleSolutions={handleSelectAllVisibleDataverseSolutions}
                   onClearSelectedSolutions={handleClearSelectedDataverseSolutions}
                   onRefresh={() => { void loadDataverseSolutions(); }}
-                  onGenerateSelected={handleGenerateSelectedDataverseSolutions}
                 />
               </div>
             </details>

@@ -27,7 +27,7 @@
 }
 
 .refreshBtn,
-.generateBtn {
+.refreshBtn {
   border: 1px solid var(--color-accent);
   background: var(--color-accent);
   color: var(--color-text-inverse);
@@ -39,7 +39,6 @@
 }
 
 .refreshBtn:focus-visible,
-.generateBtn:focus-visible,
 .miniBtn:focus-visible,
 .publisherSummary:focus-visible,
 .cardCheckbox input:focus-visible {
@@ -48,7 +47,7 @@
 }
 
 .refreshBtn:disabled,
-.generateBtn:disabled {
+.refreshBtn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

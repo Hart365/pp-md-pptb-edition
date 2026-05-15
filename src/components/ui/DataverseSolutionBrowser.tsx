@@ -27,7 +27,6 @@ export interface DataverseSolutionBrowserProps {
   onSelectAllVisibleSolutions: () => void;
   onClearSelectedSolutions: () => void;
   onRefresh: () => void;
-  onGenerateSelected: () => void;
 }
 
 export function DataverseSolutionBrowser({
@@ -51,7 +50,6 @@ export function DataverseSolutionBrowser({
   onSelectAllVisibleSolutions,
   onClearSelectedSolutions,
   onRefresh,
-  onGenerateSelected,
 }: DataverseSolutionBrowserProps) {
   const selectedSet = new Set(selectedSolutionIds);
   const busySet = new Set(busySolutionIds);
@@ -132,14 +130,6 @@ export function DataverseSolutionBrowser({
           </button>
           <button type="button" className={styles.miniBtn} onClick={onClearSelectedSolutions}>
             Clear selection
-          </button>
-          <button
-            type="button"
-            className={styles.generateBtn}
-            onClick={onGenerateSelected}
-            disabled={selectedSolutionIds.length === 0 || busySolutionIds.length > 0}
-          >
-            Generate selected ({selectedSolutionIds.length})
           </button>
         </div>
       </div>

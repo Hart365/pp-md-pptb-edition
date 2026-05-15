@@ -3,12 +3,15 @@
  * @description Accessible drag-and-drop / click-to-browse file input component.
  */
 
-import { useRef, useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
+import { useRef, useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import styles from './DropZone.module.css';
 
 export interface DropZoneProps {
   onFilesSelected: (files: File[]) => void;
   disabled?: boolean;
+  onQueueChange?: (files: File[]) => void;
+  showGenerateButton?: boolean;
+  resetToken?: number;
 }
 
 function isValidZip(file: File): boolean {
@@ -33,11 +36,26 @@ function sortFilesByName(files: File[]): File[] {
   ));
 }
 
-export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
+export function DropZone({
+  onFilesSelected,
+  disabled = false,
+  onQueueChange,
+  showGenerateButton = true,
+  resetToken,
+}: DropZoneProps) {
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
   const [error, setError] = useState<string>('');
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    onQueueChange?.(queuedFiles);
+  }, [queuedFiles, onQueueChange]);
+
+  useEffect(() => {
+    setQueuedFiles([]);
+    setError('');
+  }, [resetToken]);
 
   const handleFiles = useCallback((rawFiles: File[]) => {
     const valid = rawFiles.filter(isValidZip);
@@ -209,27 +227,29 @@ export function DropZone({ onFilesSelected, disabled = false }: DropZoneProps) {
             ))}
           </ul>
 
-          <button
-            type="button"
-            onClick={handleProcess}
-            disabled={disabled}
-            style={{
-              marginTop: '1rem',
-              padding: '0.6rem 1.5rem',
-              background: 'var(--color-accent)',
-              color: 'var(--color-text-inverse)',
-              border: 'none',
-              borderRadius: 'var(--border-radius-md)',
-              fontSize: '1rem',
-              fontWeight: 600,
-              cursor: disabled ? 'not-allowed' : 'pointer',
-              opacity: disabled ? 0.6 : 1,
-              transition: 'background var(--transition-fast)',
-            }}
-            aria-label={`Generate documentation for ${queuedFiles.length} file${queuedFiles.length > 1 ? 's' : ''}`}
-          >
-            Generate Documentation
-          </button>
+          {showGenerateButton && (
+            <button
+              type="button"
+              onClick={handleProcess}
+              disabled={disabled}
+              style={{
+                marginTop: '1rem',
+                padding: '0.6rem 1.5rem',
+                background: 'var(--color-accent)',
+                color: 'var(--color-text-inverse)',
+                border: 'none',
+                borderRadius: 'var(--border-radius-md)',
+                fontSize: '1rem',
+                fontWeight: 600,
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                opacity: disabled ? 0.6 : 1,
+                transition: 'background var(--transition-fast)',
+              }}
+              aria-label={`Generate documentation for ${queuedFiles.length} file${queuedFiles.length > 1 ? 's' : ''}`}
+            >
+              Generate Documentation
+            </button>
+          )}
         </div>
       )}
     </div>

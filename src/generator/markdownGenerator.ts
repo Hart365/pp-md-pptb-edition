@@ -36,6 +36,8 @@ export interface MarkdownGenerationOptions {
   erdMode?: 'compact' | 'detailed-relationships';
   documentContext?: DocumentContext;
   enrichmentIndicators?: EnrichmentIndicators;
+  includeDiagrams?: boolean;
+  includeDefaultColumns?: boolean;
 }
 
 export interface EnrichmentIndicators {
@@ -179,6 +181,29 @@ function appTypeLabel(appType: AppType): string {
     [AppType.AIPlugin]: 'Code App',
   };
   return labels[appType] ?? appType;
+}
+
+function includeDefaultColumns(options: MarkdownGenerationOptions): boolean {
+  return options.includeDefaultColumns !== false;
+}
+
+function includeDiagrams(options: MarkdownGenerationOptions): boolean {
+  return options.includeDiagrams !== false;
+}
+
+function isSharePointConnectorName(name: string | undefined | null): boolean {
+  if (!name) return false;
+  const normalized = name.toLowerCase();
+  return normalized.includes('sharepoint')
+    || normalized.includes('share point')
+    || normalized.includes('shared_sharepointonline')
+    || normalized.includes('sharepointonline');
+}
+
+function extractSharePointUrls(text: string | undefined | null): string[] {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[a-z0-9.-]+\.sharepoint\.com[^\s"')\]\}]*/gi) ?? [];
+  return uniqueStrings(matches.map((url) => url.trim().replace(/[.,;]+$/, '')));
 }
 
 function processStatusLabel(status: boolean | undefined, withIcon = false): string {
@@ -791,13 +816,19 @@ function generateHeader(
  * @param solution - Parsed solution data
  * @returns Markdown ToC string
  */
-function generateTableOfContents(solution: ParsedSolution): string {
+function generateTableOfContents(solution: ParsedSolution, options: MarkdownGenerationOptions): string {
   const lines: string[] = [heading(2, 'Table of Contents'), ''];
   const documentedApps = solution.apps.filter(isDocumentedApp);
   const dataverseInsightsCount = solution.dataverseInsights ? 1 : 0;
+  const sharePointConnectionRefs = solution.connectionReferences.filter(
+    (reference) => isSharePointConnectorName(reference.connectorDisplayName) || isSharePointConnectorName(reference.connectorId),
+  );
+  const sharePointApps = documentedApps.filter((app) => (app.connectors ?? []).some((connector) => isSharePointConnectorName(connector)));
+  const sharePointProcesses = solution.processes.filter((process) => (process.flowConnectors ?? []).some((connector) => isSharePointConnectorName(connector)));
+  const sharePointSectionCount = sharePointConnectionRefs.length + sharePointApps.length + sharePointProcesses.length;
 
   const sections: Array<{ label: string; count: number }> = [
-    { label: 'Entity Relationship Diagram',    count: solution.entities.length },
+    { label: 'Entity Relationship Diagram',    count: includeDiagrams(options) ? solution.entities.length : 0 },
     { label: 'Tables & Columns',               count: solution.entities.length },
     { label: 'Global Option Sets',             count: solution.optionSets.length },
     { label: 'Forms & Views',                  count: solution.forms.length + solution.views.length },
@@ -809,6 +840,7 @@ function generateTableOfContents(solution: ParsedSolution): string {
     { label: 'Connection References',          count: solution.connectionReferences.length },
     { label: 'Environment Variables',          count: solution.environmentVariables.length },
     { label: 'Email Templates',                count: solution.emailTemplates.length },
+    { label: 'SharePoint Data Sources',        count: sharePointSectionCount },
     { label: 'Reports & Dashboards',           count: solution.reports.length + solution.dashboards.length },
     { label: 'Plugin Assemblies & Steps',      count: solution.pluginAssemblies.length },
     { label: 'Dataverse Deep Insights',        count: dataverseInsightsCount },
@@ -839,6 +871,7 @@ function generateERD(
   entities: EntityDefinition[],
   options: MarkdownGenerationOptions,
 ): string {
+  if (!includeDiagrams(options)) return '';
   if (entities.length === 0) return '';
 
   const lines: string[] = [
@@ -923,7 +956,11 @@ function generateERD(
         if (rel.referencingAttribute) relationshipColumns.add(rel.referencingAttribute.toLowerCase());
       });
 
-      const attrsToShow = entity.attributes.filter((attr) =>
+      const availableAttributes = includeDefaultColumns(options)
+        ? entity.attributes
+        : entity.attributes.filter((attr) => attr.isCustom);
+
+      const attrsToShow = availableAttributes.filter((attr) =>
         relationshipColumns.has(attr.name.toLowerCase()) ||
         attr.type === AttributeType.Lookup ||
         attr.type === AttributeType.Owner ||
@@ -1048,12 +1085,16 @@ function generateEntitiesSection(
   entities: EntityDefinition[],
   optionSets: OptionSetDefinition[],
   entityMap: Map<string, string>,
+  options: MarkdownGenerationOptions,
 ): string {
   if (entities.length === 0) return '';
 
   const lines: string[] = [heading(2, 'Tables & Columns'), ''];
 
   sortByLabel(entities, (entity) => labelWithSchema(entity.displayName || entity.logicalName, entity.logicalName)).forEach((entity) => {
+    const documentedAttributes = includeDefaultColumns(options)
+      ? entity.attributes
+      : entity.attributes.filter((attr) => attr.isCustom);
     const entityDisplayName = entity.displayName || entity.logicalName;
     lines.push(heading(3, `${entityDisplayName} (${entity.logicalName})`));
     lines.push('');
@@ -1079,13 +1120,13 @@ function generateEntitiesSection(
     lines.push('');
 
     // Columns
-    if (entity.attributes.length > 0) {
+    if (documentedAttributes.length > 0) {
       lines.push(heading(4, 'Columns'));
       lines.push('');
 
       // Determine which optional columns to show
-      const hasDescriptions = entity.attributes.some((a) => !!a.description);
-      const hasAuditInfo = entity.attributes.some((a) => a.isAuditEnabled !== undefined);
+      const hasDescriptions = documentedAttributes.some((a) => !!a.description);
+      const hasAuditInfo = documentedAttributes.some((a) => a.isAuditEnabled !== undefined);
 
       if (hasDescriptions && hasAuditInfo) {
         lines.push('| Display Name | Schema Name | Type | Required | Custom | Audited | Notes | Description |');
@@ -1101,7 +1142,7 @@ function generateEntitiesSection(
         lines.push('|--------------|-------------|------|----------|--------|-------|');
       }
 
-      sortByLabel(entity.attributes, (attr) => labelWithSchema(attr.displayName || attr.name, attr.name)).forEach((attr) => {
+      sortByLabel(documentedAttributes, (attr) => labelWithSchema(attr.displayName || attr.name, attr.name)).forEach((attr) => {
         const notes: string[] = [];
         if (attr.isPrimaryName) notes.push('🔑 Primary Name');
         if (attr.lookupTarget) notes.push(`→ ${entityDisplayLabel(attr.lookupTarget, entityMap)}`);
@@ -1127,6 +1168,11 @@ function generateEntitiesSection(
 
         lines.push(row);
       });
+      lines.push('');
+    } else if (!includeDefaultColumns(options) && entity.attributes.length > 0) {
+      lines.push(heading(4, 'Columns'));
+      lines.push('');
+      lines.push('_No custom columns are present after excluding default/system columns._');
       lines.push('');
     }
 
@@ -1163,7 +1209,7 @@ function generateEntitiesSection(
     }
 
     // Inline OptionSet options (for local optionsets)
-    const localOSAttrs = entity.attributes.filter(
+    const localOSAttrs = documentedAttributes.filter(
       (a) => (a.type === AttributeType.OptionSet || a.type === AttributeType.MultiSelectOptionSet) && a.options,
     );
     if (localOSAttrs.length > 0) {
@@ -1182,7 +1228,7 @@ function generateEntitiesSection(
     }
 
     // Cross-reference global option sets used
-    const globalOSRefs = entity.attributes
+    const globalOSRefs = documentedAttributes
       .filter((a) => a.optionSetName)
       .map((a) => a.optionSetName as string);
     if (globalOSRefs.length > 0) {
@@ -1778,6 +1824,103 @@ function generateIntegrationSection(
   return lines.join('\n');
 }
 
+function generateSharePointDataSourcesSection(solution: ParsedSolution): string {
+  const sharePointRefs = solution.connectionReferences.filter(
+    (reference) => isSharePointConnectorName(reference.connectorDisplayName) || isSharePointConnectorName(reference.connectorId),
+  );
+  const sharePointApps = solution.apps
+    .filter(isDocumentedApp)
+    .filter((app) => (app.connectors ?? []).some((connector) => isSharePointConnectorName(connector)));
+  const sharePointProcesses = solution.processes
+    .filter((process) => (process.flowConnectors ?? []).some((connector) => isSharePointConnectorName(connector)));
+
+  const sharePointUrls = new Set<string>();
+  solution.environmentVariables.forEach((envVar) => {
+    extractSharePointUrls(envVar.currentValue).forEach((url) => sharePointUrls.add(url));
+    extractSharePointUrls(envVar.defaultValue).forEach((url) => sharePointUrls.add(url));
+  });
+  solution.processes.forEach((process) => {
+    extractSharePointUrls(JSON.stringify(process.flowDefinition ?? {})).forEach((url) => sharePointUrls.add(url));
+  });
+
+  if (sharePointRefs.length === 0 && sharePointApps.length === 0 && sharePointProcesses.length === 0 && sharePointUrls.size === 0) {
+    return '';
+  }
+
+  const lines: string[] = [heading(2, 'SharePoint Data Sources'), ''];
+  lines.push(`- Connection references using SharePoint connectors: **${sharePointRefs.length}**`);
+  lines.push(`- Apps using SharePoint connectors: **${sharePointApps.length}**`);
+  lines.push(`- Processes using SharePoint connectors: **${sharePointProcesses.length}**`);
+  lines.push(`- SharePoint site URLs discovered: **${sharePointUrls.size}**`);
+  lines.push('');
+
+  if (sharePointRefs.length > 0) {
+    lines.push(heading(3, 'SharePoint Connection References'));
+    lines.push('');
+    lines.push('| Display Name | Logical Name | Connector | Connection ID |');
+    lines.push('|--------------|--------------|-----------|---------------|');
+    sortByLabel(sharePointRefs, (reference) => reference.displayName || reference.name).forEach((reference) => {
+      lines.push(
+        `| ${mdEscape(reference.displayName || reference.name)} ` +
+        `| \`${mdEscape(reference.name)}\` ` +
+        `| ${mdEscape(reference.connectorDisplayName || reference.connectorId || 'SharePoint')} ` +
+        `| ${reference.connectionId ? `\`${mdEscape(reference.connectionId)}\`` : '–'} |`,
+      );
+    });
+    lines.push('');
+  }
+
+  if (sharePointApps.length > 0) {
+    lines.push(heading(3, 'Apps Using SharePoint'));
+    lines.push('');
+    lines.push('| App Name | Type | SharePoint Connectors |');
+    lines.push('|----------|------|-----------------------|');
+    sortByLabel(sharePointApps, (app) => appTitle(app)).forEach((app) => {
+      const connectors = sortByLabel(
+        (app.connectors ?? []).filter((connector) => isSharePointConnectorName(connector)),
+        (connector) => connector,
+      );
+      lines.push(
+        `| ${mdEscape(appTitle(app))} ` +
+        `| ${appTypeLabel(app.appType)} ` +
+        `| ${connectors.map((connector) => mdEscape(connector)).join(', ')} |`,
+      );
+    });
+    lines.push('');
+  }
+
+  if (sharePointProcesses.length > 0) {
+    lines.push(heading(3, 'Processes Using SharePoint'));
+    lines.push('');
+    lines.push('| Process | Category | SharePoint Connectors | Trigger |');
+    lines.push('|---------|----------|-----------------------|---------|');
+    sortByLabel(sharePointProcesses, (process) => processTitle(process)).forEach((process) => {
+      const connectors = sortByLabel(
+        (process.flowConnectors ?? []).filter((connector) => isSharePointConnectorName(connector)),
+        (connector) => connector,
+      );
+      lines.push(
+        `| ${mdEscape(processTitle(process))} ` +
+        `| ${processCategoryLabel(process.category)} ` +
+        `| ${connectors.map((connector) => mdEscape(connector)).join(', ')} ` +
+        `| ${mdEscape(process.flowTrigger || process.triggerType || '–')} |`,
+      );
+    });
+    lines.push('');
+  }
+
+  if (sharePointUrls.size > 0) {
+    lines.push(heading(3, 'Discovered SharePoint Sites'));
+    lines.push('');
+    sortByLabel(Array.from(sharePointUrls), (url) => url).forEach((url) => {
+      lines.push(`- ${mdEscape(url)}`);
+    });
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Reports & Dashboards
 // ---------------------------------------------------------------------------
@@ -2240,9 +2383,9 @@ export function generateMarkdown(
 
   const sections: string[] = [
     generateHeader(solution, options.documentContext, options.enrichmentIndicators),
-    generateTableOfContents(solution),
+    generateTableOfContents(solution, options),
     generateERD(solution.entities, options),
-    generateEntitiesSection(solution.entities, solution.optionSets, entityMap),
+    generateEntitiesSection(solution.entities, solution.optionSets, entityMap, options),
     generateOptionSetsSection(solution.optionSets),
     generateFormsViewsSection(solution, entityMap),
     generateProcessesSection(solution.processes, entityMap, solution.connectionReferences, solution.environmentVariables),
@@ -2250,6 +2393,7 @@ export function generateMarkdown(
     generateWebResourcesSection(solution.webResources),
     generateSecuritySection(solution.securityRoles, solution.fieldSecurityProfiles, entityMap, attributeDisplayMap),
     generateIntegrationSection(solution.connectionReferences, solution.environmentVariables, solution.emailTemplates),
+    generateSharePointDataSourcesSection(solution),
     generateReportsSection(solution.reports, solution.dashboards),
     generatePluginsSection(solution.pluginAssemblies),
     generateDataverseInsightsSection(solution, entityMap),
