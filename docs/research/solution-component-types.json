@@ -1,0 +1,36 @@
+{
+  "$comment": "Dataverse solutioncomponent.componenttype routing map. Source: Microsoft Learn solutioncomponent reference. Verified 2026-09-03.",
+  "version": "1.0.0",
+  "rootComponentBehavior": {
+    "0": "Include Subcomponents",
+    "1": "Do not include subcomponents",
+    "2": "Include As Shell Only"
+  },
+  "componentTypes": [
+    { "value": 1, "label": "Entity", "table": "EntityDefinitions", "idField": "MetadataId", "section": "tables", "primary": true },
+    { "value": 9, "label": "Option Set", "table": "GlobalOptionSetDefinitions", "idField": "MetadataId", "section": "choices", "primary": true },
+    { "value": 20, "label": "Role", "table": "roles", "idField": "roleid", "section": "security", "primary": true },
+    { "value": 24, "label": "Form", "table": "systemforms", "idField": "formid", "section": "formsViews" },
+    { "value": 26, "label": "Saved Query", "table": "savedqueries", "idField": "savedqueryid", "section": "formsViews", "primary": true },
+    { "value": 29, "label": "Workflow", "table": "workflows", "idField": "workflowid", "section": "processes", "primary": true },
+    { "value": 31, "label": "Report", "table": "reports", "idField": "reportid", "section": "reports", "primary": true },
+    { "value": 60, "label": "System Form", "table": "systemforms", "idField": "formid", "section": "formsViews", "primary": true },
+    { "value": 61, "label": "Web Resource", "table": "webresourceset", "idField": "webresourceid", "section": "webResources", "primary": true },
+    { "value": 70, "label": "Field Security Profile", "table": "fieldsecurityprofiles", "idField": "fieldsecurityprofileid", "section": "security", "primary": true },
+    { "value": 90, "label": "Plugin Type", "table": "plugintypes", "idField": "plugintypeid", "section": "plugins", "primary": true },
+    { "value": 91, "label": "Plugin Assembly", "table": "pluginassemblies", "idField": "pluginassemblyid", "section": "plugins", "primary": true },
+    { "value": 92, "label": "SDK Message Processing Step", "table": "sdkmessageprocessingsteps", "idField": "sdkmessageprocessingstepid", "section": "plugins", "primary": true },
+    { "value": 93, "label": "SDK Message Processing Step Image", "table": "sdkmessageprocessingstepimages", "idField": "sdkmessageprocessingstepimageid", "section": "plugins" },
+    { "value": 95, "label": "Service Endpoint", "table": "serviceendpoints", "idField": "serviceendpointid", "section": "integration" },
+    { "value": 300, "label": "Canvas App", "table": "canvasapps", "idField": "canvasappid", "section": "apps", "primary": true },
+    { "value": 371, "label": "Connector", "table": "connectors", "idField": "connectorid", "section": "integration" },
+    { "value": 372, "label": "Connector", "table": "connectors", "idField": "connectorid", "section": "integration" },
+    { "value": 380, "label": "Environment Variable Definition", "table": "environmentvariabledefinitions", "idField": "environmentvariabledefinitionid", "section": "integration", "primary": true },
+    { "value": 381, "label": "Environment Variable Value", "table": "environmentvariablevalues", "idField": "environmentvariablevalueid", "section": "integration" }
+  ],
+  "notes": {
+    "connectionReference": "Connection references are queried by solution ID; they are not a distinct component type.",
+    "workflowCategory": "Component type 29 covers workflows, business rules, BPFs, cloud flows, desktop flows, and AI flows; route by workflow.category.",
+    "unknown": "Retain unrecognised component types in inventory and emit a warning rather than discarding them."
+  }
+}
