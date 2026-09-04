@@ -1,6 +1,6 @@
 {
   "name": "@powerplatform/pp-md-tool",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "PP-MD Power Platform Markdown Document Generator",
   "description": "Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection",
   "author": "Mike Hartley",

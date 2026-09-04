@@ -11,7 +11,6 @@ export interface DropZoneProps {
   disabled?: boolean;
   onQueueChange?: (files: File[]) => void;
   showGenerateButton?: boolean;
-  resetToken?: number;
 }
 
 function isValidZip(file: File): boolean {
@@ -41,7 +40,6 @@ export function DropZone({
   disabled = false,
   onQueueChange,
   showGenerateButton = true,
-  resetToken,
 }: DropZoneProps) {
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
@@ -51,11 +49,6 @@ export function DropZone({
   useEffect(() => {
     onQueueChange?.(queuedFiles);
   }, [queuedFiles, onQueueChange]);
-
-  useEffect(() => {
-    setQueuedFiles([]);
-    setError('');
-  }, [resetToken]);
 
   const handleFiles = useCallback((rawFiles: File[]) => {
     const valid = rawFiles.filter(isValidZip);

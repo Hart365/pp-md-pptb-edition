@@ -16,7 +16,7 @@ Key connected-mode capabilities:
 - Filter by publisher and managed/unmanaged status
 - Multi-select solutions and generate in batch
 - Refresh solution list from the environment
-- Enriches generated documentation with Dataverse metadata where available
+- Keeps connected documentation scoped to selected solution components
 - Keeps processing read-only and within the active environment context
 
 ## Power Platform ToolBox Manifest Alignment
@@ -27,7 +27,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @powerplatform/pp-md-tool |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.0.0 |
+| version | 1.0.1 |
 | description | Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection |
 | icon | pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition/ |

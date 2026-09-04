@@ -202,7 +202,7 @@ function isSharePointConnectorName(name: string | undefined | null): boolean {
 
 function extractSharePointUrls(text: string | undefined | null): string[] {
   if (!text) return [];
-  const matches = text.match(/https?:\/\/[a-z0-9.-]+\.sharepoint\.com[^\s"')\]\}]*/gi) ?? [];
+  const matches = text.match(/https?:\/\/[a-z0-9.-]+\.sharepoint\.com[^\s"')\]}]*/gi) ?? [];
   return uniqueStrings(matches.map((url) => url.trim().replace(/[.,;]+$/, '')));
 }
 

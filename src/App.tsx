@@ -20,7 +20,7 @@
  *    user must click Generate.
  */
 
-import { useState, useCallback, useEffect, useRef, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import JSZip from 'jszip';
 import { DropZone }          from './components/ui/DropZone';
 import { DataverseSolutionBrowser } from './components/ui/DataverseSolutionBrowser';
@@ -371,11 +371,11 @@ export default function App() {
   const [includeDependencyReport, setIncludeDependencyReport] = useState<boolean>(false);
   const invalidArchiveOkRef = useRef<HTMLButtonElement | null>(null);
 
-  const generationPreferences: GenerationPreferences = {
+  const generationPreferences = useMemo<GenerationPreferences>(() => ({
     erdMode,
     includeDiagrams,
     includeDefaultColumns,
-  };
+  }), [erdMode, includeDiagrams, includeDefaultColumns]);
 
   /**
    * Guard against host click-through on startup opening external links.
@@ -1472,11 +1472,11 @@ export default function App() {
                     <>
                       <div className={styles.dropZoneWrapper}>
                         <DropZone
+                          key={dropZoneResetToken}
                           onFilesSelected={handleFilesSelected}
                           disabled={isProcessing}
                           onQueueChange={setQueuedLocalFiles}
                           showGenerateButton={false}
-                          resetToken={dropZoneResetToken}
                         />
                       </div>
 
@@ -1665,11 +1665,11 @@ export default function App() {
               </summary>
               <div className={styles.addMoreBody}>
                 <DropZone
+                  key={`add-more-${dropZoneResetToken}`}
                   onFilesSelected={handleFilesSelected}
                   disabled={isProcessing}
                   onQueueChange={setQueuedLocalFiles}
                   showGenerateButton={false}
-                  resetToken={dropZoneResetToken}
                 />
               </div>
             </details>
