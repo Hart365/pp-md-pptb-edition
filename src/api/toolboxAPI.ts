@@ -74,6 +74,9 @@ export async function saveSetting(key: string, value: unknown): Promise<void> {
   if (isInPPTB()) {
     return window.toolboxAPI.settings.set(key, value);
   }
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(key, JSON.stringify(value));
+  }
 }
 
 /**
@@ -97,6 +100,23 @@ export async function getCurrentTheme(): Promise<'light' | 'dark'> {
   }
 
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+/**
+ * Open a URL in the user's external/system browser.
+ * Inside PPTB the renderer runs in a restricted webview where `target="_blank"`
+ * anchor clicks are silently swallowed, so links must be routed through the
+ * host's `openInConnectionBrowser` bridge. Returns false when not in PPTB so
+ * callers can fall back to normal anchor navigation.
+ */
+export async function openExternalUrl(url: string): Promise<boolean> {
+  if (!isInPPTB()) return false;
+  try {
+    await window.toolboxAPI.utils.openInConnectionBrowser(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

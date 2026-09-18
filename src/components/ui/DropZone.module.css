@@ -58,18 +58,19 @@
   align-items: center;
   gap: 0.4rem;
   padding: 0.55rem 1.25rem;
-  background: var(--color-accent);
+  /* Darker accent-hover token used as the fill (not just hover) to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   border: none;
   border-radius: var(--border-radius-md);
   font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: filter var(--transition-fast);
 }
 
 .browseBtn:hover {
-  background: var(--color-accent-hover);
+  filter: brightness(0.9);
 }
 
 .fileList {
@@ -109,6 +110,11 @@
 }
 
 .removeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
   background: transparent;
   border: none;
   color: var(--color-text-muted);

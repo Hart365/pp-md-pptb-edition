@@ -201,6 +201,10 @@ export interface EntityAttribute extends NamedItem {
   isPrimaryName?: boolean;
   /** Whether auditing is enabled for this column */
   isAuditEnabled?: boolean;
+  /** Whether the column is included when users run Advanced Find/queries (IsValidForAdvancedFind) */
+  isValidForAdvancedFind?: boolean;
+  /** Whether the column can have field-level security enabled (IsSecured) */
+  isSecured?: boolean;
 }
 
 /**
@@ -389,6 +393,82 @@ export interface AppDefinition extends NamedItem {
   isEnabled?: boolean;
   /** Version of the app (from manifest) */
   version?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Modern Power Platform artifacts
+// ---------------------------------------------------------------------------
+
+/** A Copilot Studio agent exported with a solution. */
+export interface AgentDefinition extends NamedItem {
+  /** Source path within the solution archive or Dataverse artifact identifier. */
+  sourcePath: string;
+  /** Agent category when available. */
+  agentType?: string;
+  /** Authoring language or locale. */
+  language?: string;
+  /** Trigger or channel configuration summary. */
+  trigger?: string;
+  /** Referenced connectors discovered without reading credentials. */
+  connectors?: string[];
+}
+
+/** An AI model artifact exported with a solution. */
+export interface AIModelDefinition extends NamedItem {
+  /** Source path within the solution archive or Dataverse artifact identifier. */
+  sourcePath: string;
+  /** Model family or type. */
+  modelType?: string;
+  /** Model provider. */
+  provider?: string;
+  /** Model version. */
+  version?: string;
+  /** Deployment reference, never a credential or secret URL. */
+  endpoint?: string;
+}
+
+/** A Power Automate desktop flow artifact. */
+export interface DesktopFlowDefinition extends NamedItem {
+  /** Source path within the solution archive or Dataverse artifact identifier. */
+  sourcePath: string;
+  /** Display folder when available. */
+  folder?: string;
+  /** Enabled state when available. */
+  isEnabled?: boolean;
+  /** Number of detected actions. */
+  stepCount?: number;
+  /** Referenced systems or connectors. */
+  connectors?: string[];
+}
+
+/** A Power Platform dataflow artifact. */
+export interface DataflowDefinition extends NamedItem {
+  /** Source path within the solution archive or Dataverse artifact identifier. */
+  sourcePath: string;
+  /** Referenced systems or connectors. */
+  connectors?: string[];
+  /** Refresh mode or schedule summary. */
+  refreshMode?: string;
+}
+
+/** A custom API artifact available from a solution ZIP. */
+export interface CustomAPIDefinition extends NamedItem {
+  /** Source path within the solution archive or Dataverse artifact identifier. */
+  sourcePath: string;
+  /** Bound Dataverse table logical name. */
+  boundEntityLogicalName?: string;
+  /** Whether the API is function-style. */
+  isFunction?: boolean;
+}
+
+/** A mobile or offline profile artifact. */
+export interface OfflineProfileDefinition extends NamedItem {
+  /** Source path within the solution archive or Dataverse artifact identifier. */
+  sourcePath: string;
+  /** Profile category. */
+  profileType?: string;
+  /** Tables included in the profile. */
+  entities?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -601,6 +681,11 @@ export interface DataverseDependencyEdge {
 }
 
 /**
+ * Policy controlling how connected Dataverse data is enumerated for a solution.
+ */
+export type SolutionCollectionPolicy = 'solutionOnly' | 'solutionAndDirectReferences' | 'environmentAppendix';
+
+/**
  * Dataverse-only insight payload for advanced documentation sections.
  */
 export interface DataverseInsights {
@@ -637,6 +722,8 @@ export interface SolutionMetadata {
  * This is the central data model passed to the Markdown generator.
  */
 export interface ParsedSolution {
+  /** Collection policy used when the solution was read. */
+  collectionPolicy?: SolutionCollectionPolicy;
   /** Metadata from solution.xml */
   metadata: SolutionMetadata;
   /** Tables / entities */
@@ -669,6 +756,18 @@ export interface ParsedSolution {
   dashboards: DashboardDefinition[];
   /** Plugin assemblies (with embedded steps) */
   pluginAssemblies: PluginAssemblyDefinition[];
+  /** Copilot Studio agents */
+  agents: AgentDefinition[];
+  /** AI model artifacts */
+  aiModels: AIModelDefinition[];
+  /** Desktop flow artifacts */
+  desktopFlows: DesktopFlowDefinition[];
+  /** Dataflow artifacts */
+  dataflows: DataflowDefinition[];
+  /** Custom APIs from solution archives */
+  customApis: CustomAPIDefinition[];
+  /** Mobile and offline profiles */
+  offlineProfiles: OfflineProfileDefinition[];
   /** Dataverse-only deep insight payload */
   dataverseInsights?: DataverseInsights;
   /** Any parse warnings or non-fatal errors */

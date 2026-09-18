@@ -38,6 +38,34 @@
 }
 
 /* --------------------------------------------------------------------------
+   Print / PDF export
+   Only the documentation content (marked .ppmd-printable) is printed; all
+   app chrome (header, sidebar, toolbars, panels) is hidden regardless of
+   where it sits in the DOM. Used by the "Export .pdf" action, which calls
+   window.print() so the user can choose "Save as PDF" in the OS print dialog.
+   -------------------------------------------------------------------------- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .ppmd-printable,
+  .ppmd-printable * {
+    visibility: visible;
+  }
+  .ppmd-printable {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0;
+    color: #000;
+    background: #fff;
+  }
+}
+
+/* --------------------------------------------------------------------------
    Light theme tokens
    -------------------------------------------------------------------------- */
 :root,
@@ -192,6 +220,20 @@ body {
 /* Remove outline for mouse clicks (focus-visible handles keyboard-only) */
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/* --------------------------------------------------------------------------
+   Native form control colour scheme (WCAG 1.4.11 Non-text Contrast)
+   Tells the browser to render native widgets (date picker icon/popup,
+   spinners, etc.) using a palette matching the active theme, instead of
+   defaulting to a light/black-on-dark icon regardless of theme.
+   -------------------------------------------------------------------------- */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 /* --------------------------------------------------------------------------

@@ -5,6 +5,9 @@
  */
 
 import { downloadFile } from './toolboxAPI';
+import { createSolutionWorkbook } from './excelExporter';
+import { createRenderedDocumentationPdf } from './pdfExporter';
+import type { ParsedSolution } from '../types/solution';
 
 /**
  * Export markdown content as a file
@@ -25,6 +28,26 @@ export async function exportZip(blob: Blob, filename: string): Promise<void> {
   const safeName = filename.endsWith('.zip') ? filename : `${filename}.zip`;
   
   await downloadFile(blob, safeName, 'application/zip');
+}
+
+/**
+ * Export a standalone HTML document (already-rendered documentation).
+ */
+export async function exportHtml(content: string, filename: string): Promise<void> {
+  const safeName = filename.endsWith('.html') ? filename : `${filename}.html`;
+  await downloadFile(content, safeName, 'text/html');
+}
+
+/** Export a richly formatted workbook containing the solution inventories. */
+export async function exportExcel(solution: ParsedSolution, filename: string): Promise<void> {
+  const safeName = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`;
+  await downloadFile(createSolutionWorkbook(solution), safeName, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+}
+
+/** Export generated documentation as a valid, text-based, searchable PDF file rendered directly from the Markdown source. */
+export async function exportPdf(markdown: string, title: string, filename: string, diagramImages: ReadonlyArray<string | null> = []): Promise<void> {
+  const safeName = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
+  await downloadFile(await createRenderedDocumentationPdf(markdown, title, diagramImages), safeName, 'application/pdf');
 }
 
 /**

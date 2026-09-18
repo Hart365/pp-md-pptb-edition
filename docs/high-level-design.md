@@ -45,7 +45,7 @@ flowchart LR
 - drag/drop and browse intake for solution ZIP files
 - processing progress and status feedback
 - multi-solution navigation and selection
-- markdown view, copy, and export actions
+- markdown view, copy, and export actions, including an optional consolidated companion diagrams document
 - theme selection and persistence
 
 ### Parsing Engine
@@ -70,7 +70,7 @@ flowchart LR
 3. ParsedSolution objects are passed to generateMarkdown.
 4. Generated markdown is displayed in MarkdownViewer.
 5. User exports one or more markdown files to local storage.
-6. Optional consolidated markdown is generated across all loaded solutions.
+6. Optional consolidated markdown is generated across all loaded solutions; when selected, diagrams are emitted into a separate navigable document.
 
 ## Technology Stack
 - Runtime shell: Electron

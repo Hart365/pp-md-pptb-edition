@@ -9,8 +9,10 @@
 .appRoot {
   display: flex;
   flex-direction: column;
+  height: 100vh;
   min-height: 100vh;
   background: var(--color-bg);
+  overflow: hidden;
 }
 
 /* --------------------------------------------------------------------------
@@ -23,7 +25,8 @@
   left: 0.5rem;
   z-index: 9999;
   padding: 0.5rem 1rem;
-  background: var(--color-accent);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   font-weight: 700;
   border-radius: var(--border-radius-md);
@@ -45,11 +48,12 @@
   position: sticky;
   top: 0;
   z-index: 100;
+  flex: 0 0 auto;
 }
 
 .headerInner {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   max-width: 1600px;
   margin: 0 auto;
@@ -60,11 +64,13 @@
 .headerLeft {
   justify-self: start;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
 .headerCenter {
-  justify-self: center;
-  text-align: center;
+  display: none;
 }
 
 .headerRight {
@@ -120,31 +126,128 @@
 .headerActions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.menuToggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--border-radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.headerGroup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: var(--color-surface-alt);
+}
+
+.headerExportGroup {
+  border-color: var(--color-accent);
 }
 
 .headerBtn {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  padding: 0.4rem 0.9rem;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.75rem;
   background: var(--color-surface);
   color: var(--color-text-primary);
   border: 1px solid var(--color-accent);
   border-radius: var(--border-radius-md);
+  font-family: inherit;
   font-size: 0.875rem;
   font-weight: 600;
+  line-height: 1;
   cursor: pointer;
   transition: background var(--transition-fast);
 }
 .headerBtn:hover {
-  background: var(--color-accent);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
 }
 
 .headerBtnActive {
-  background: var(--color-accent);
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
+}
+
+.headerExportMenu {
+  position: relative;
+}
+
+.headerExportMenu summary {
+  list-style: none;
+}
+
+.headerExportMenu summary::-webkit-details-marker {
+  display: none;
+}
+
+.headerExportMenu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.headerExportLabel,
+.headerDropdownArrow {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.headerExportPanel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 30;
+  display: grid;
+  min-width: 14rem;
+  gap: 0.25rem;
+  padding: 0.35rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.headerDropdownArrow {
+  margin-left: 0.15rem;
+  font-size: 0.9rem;
+}
+
+.menuBtn {
+  border: 0;
+  border-radius: var(--border-radius-sm);
+  padding: 0.6rem 0.75rem;
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.menuBtn:hover,
+.menuBtn:focus-visible {
+  background: var(--color-accent-subtle);
 }
 
 /* --------------------------------------------------------------------------
@@ -182,6 +285,11 @@
   min-width: 0; /* prevent overflow */
 }
 
+/* The viewer owns its document scroll surface, keeping its toolbar static. */
+.mainWithViewer {
+  overflow: hidden;
+}
+
 /* Ensure main can receive focus for skip-link target (WCAG 2.4.1) */
 .main:focus {
   outline: none;
@@ -211,6 +319,12 @@
   color: var(--color-text-secondary);
   line-height: 1.7;
   max-width: 680px;
+}
+
+.modeVersion {
+  margin: -0.75rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
 }
 
 .dropZoneWrapper {
@@ -404,8 +518,9 @@
 }
 
 .contextSaveBtn {
-  border: 1px solid var(--color-accent);
-  background: var(--color-accent);
+  border: 1px solid var(--color-accent-hover);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   border-radius: var(--border-radius-md);
   padding: 0.45rem 0.8rem;
@@ -472,14 +587,20 @@
 }
 
 .generatePrimaryBtn {
-  border: 1px solid var(--color-accent);
-  background: var(--color-accent);
+  border: 1px solid var(--color-accent-hover);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   border-radius: var(--border-radius-md);
+  min-height: 2.5rem;
   padding: 0.5rem 0.95rem;
   font-size: 0.9rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.generatePrimaryBtn:hover:not(:disabled) {
+  filter: brightness(0.9);
 }
 
 .generatePrimaryBtn:disabled {
@@ -495,8 +616,85 @@
   border-radius: var(--border-radius-md);
   background: var(--color-bg);
   color: var(--color-text-primary);
+  box-sizing: border-box;
+  height: 2.4rem;
   padding: 0.45rem 0.6rem;
   font-size: 0.88rem;
+}
+
+.documentScope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+}
+
+.optionDetails {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: var(--color-surface-alt);
+  overflow: hidden;
+}
+
+.optionDetails summary {
+  min-height: 2.5rem;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 0.65rem 0.85rem;
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.optionDetails .documentScope {
+  margin: 0.5rem;
+  background: var(--color-surface);
+}
+
+.generateFooter {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.75rem 0;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+.documentScope legend {
+  padding: 0 0.3rem;
+  color: var(--color-text-secondary);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.optionField {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.optionField input,
+.optionField select {
+  min-width: 0;
+  height: 2.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-md);
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+  font-weight: 400;
 }
 
 .logoGrid {
@@ -647,9 +845,12 @@
    -------------------------------------------------------------------------- */
 .viewerWrapper {
   flex: 1;
+  height: calc(100vh - 9rem);
+  max-height: calc(100vh - 9rem);
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .viewerLoadingState {
@@ -723,6 +924,23 @@
 .addMoreBody {
   padding: 1rem;
   background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.addMoreSubsection {
+  border-top: 1px solid var(--color-border);
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.addMoreSubheading {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
 }
 
 .modalBackdrop {
@@ -761,13 +979,18 @@
 
 .modalOkBtn {
   align-self: flex-end;
-  border: 1px solid var(--color-accent);
-  background: var(--color-accent);
+  border: 1px solid var(--color-accent-hover);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   border-radius: var(--border-radius-md);
   padding: 0.45rem 0.85rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.modalOkBtn:hover {
+  filter: brightness(0.9);
 }
 
 .modalOkBtn:focus-visible {
@@ -862,9 +1085,6 @@
   .headerRight {
     justify-self: stretch;
   }
-  .headerCenter {
-    text-align: left;
-  }
   .brandName {
     font-size: 1.08rem;
   }
@@ -872,8 +1092,27 @@
     white-space: normal;
   }
   .headerActions {
-    justify-content: flex-end;
-    flex-wrap: wrap;
+    display: none;
+    justify-content: stretch;
+  }
+  .headerActions.headerMenuOpen {
+    display: flex;
+  }
+  .menuToggle {
+    display: inline-flex;
+  }
+  .headerRight {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .headerGroup {
+    flex: 1 1 14rem;
+    justify-content: stretch;
+  }
+  .headerBtn {
+    flex: 1 1 auto;
   }
   .welcomeHeading {
     font-size: 1.375rem;

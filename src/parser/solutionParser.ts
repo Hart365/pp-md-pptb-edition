@@ -42,6 +42,12 @@ import type {
   PluginStepDefinition,
   RolePrivilege,
   FormField,
+  AgentDefinition,
+  AIModelDefinition,
+  DesktopFlowDefinition,
+  DataflowDefinition,
+  CustomAPIDefinition,
+  OfflineProfileDefinition,
 } from '../types/solution';
 
 import {
@@ -137,6 +143,55 @@ function getEntriesWithPrefix(zip: JSZip, prefix: string): Map<string, JSZip['fi
   zip.forEach((path, entry) => {
     if (path.toLowerCase().startsWith(lower)) {
       result.set(path, entry);
+    }
+  });
+  return result;
+}
+
+/**
+ * Discover modern artifacts by their documented solution-export folders.
+ * This intentionally retains only portable identifiers; individual artifact
+ * formats vary between Power Platform export versions and must not block docs.
+ */
+function discoverModernArtifacts(zip: JSZip): {
+  agents: AgentDefinition[];
+  aiModels: AIModelDefinition[];
+  desktopFlows: DesktopFlowDefinition[];
+  dataflows: DataflowDefinition[];
+  customApis: CustomAPIDefinition[];
+  offlineProfiles: OfflineProfileDefinition[];
+} {
+  const result = {
+    agents: [] as AgentDefinition[], aiModels: [] as AIModelDefinition[],
+    desktopFlows: [] as DesktopFlowDefinition[], dataflows: [] as DataflowDefinition[],
+    customApis: [] as CustomAPIDefinition[], offlineProfiles: [] as OfflineProfileDefinition[],
+  };
+  const artifactFromPath = (path: string) => {
+    const name = stripTrailingGuid(path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? path);
+    return name ? { name, displayName: humanizeIdentifier(name), sourcePath: path } : undefined;
+  };
+
+  zip.forEach((path, entry) => {
+    const normalizedPath = path.toLowerCase();
+    if (entry.dir || !/\.(json|xml|ya?ml)$/i.test(path)) return;
+    if (normalizedPath.includes('/agents/') || normalizedPath.startsWith('agents/') || normalizedPath.includes('/botcomponents/')) {
+      const artifact = artifactFromPath(path);
+      if (artifact) result.agents.push(artifact);
+    } else if (normalizedPath.includes('/aimodel') || normalizedPath.startsWith('aimodels/')) {
+      const artifact = artifactFromPath(path);
+      if (artifact) result.aiModels.push(artifact);
+    } else if (normalizedPath.includes('/desktopflow') || normalizedPath.includes('/uiflows/')) {
+      const artifact = artifactFromPath(path);
+      if (artifact) result.desktopFlows.push(artifact);
+    } else if (normalizedPath.includes('/dataflow') || normalizedPath.startsWith('dataflows/')) {
+      const artifact = artifactFromPath(path);
+      if (artifact) result.dataflows.push(artifact);
+    } else if (normalizedPath.includes('/customapi') || normalizedPath.startsWith('customapis/')) {
+      const artifact = artifactFromPath(path);
+      if (artifact) result.customApis.push(artifact);
+    } else if (normalizedPath.includes('/offlineprofile') || normalizedPath.startsWith('mobileofflineprofiles/')) {
+      const artifact = artifactFromPath(path);
+      if (artifact) result.offlineProfiles.push(artifact);
     }
   });
   return result;
@@ -663,6 +718,10 @@ function parseEntityNode(
     const isPrimaryName = xmlStr(a, 'IsPrimaryName') === 'true' || xmlStr(a, '@_IsPrimaryName') === 'true';
     const isAuditEnabled = xmlStr(a, 'IsAuditEnabled') === 'true' || xmlStr(a, '@_IsAuditEnabled') === 'true'
       || (() => { const ia = firstObject(a['IsAuditEnabled']); return ia ? xmlStr(ia, '@_Value') !== 'false' && xmlStr(ia, 'Value') !== 'false' : false; })();
+    const isValidForAdvancedFind = xmlStr(a, 'IsValidForAdvancedFind') === 'true' || xmlStr(a, '@_IsValidForAdvancedFind') === 'true'
+      || (() => { const av = firstObject(a['IsValidForAdvancedFind']); return av ? xmlStr(av, '@_Value') !== 'false' && xmlStr(av, 'Value') !== 'false' : false; })();
+    const isSecured = xmlStr(a, 'IsSecured') === 'true' || xmlStr(a, '@_IsSecured') === 'true'
+      || (() => { const is = firstObject(a['IsSecured']); return is ? xmlStr(is, '@_Value') === 'true' || xmlStr(is, 'Value') === 'true' : false; })();
     const maxLength   = a['MaxLength'] !== undefined ? Number(a['MaxLength']) : undefined;
     const precision   = a['Precision'] !== undefined ? Number(a['Precision']) : undefined;
 
@@ -743,6 +802,8 @@ function parseEntityNode(
       isCustom:        isCustomAttr,
       isPrimaryName,
       isAuditEnabled,
+      isValidForAdvancedFind,
+      isSecured,
       maxLength,
       precision,
       lookupTarget,
@@ -1380,6 +1441,7 @@ export async function parseSolutionZip(
   const reports:                   ReportDefinition[]                  = [];
   const dashboards:                DashboardDefinition[]               = [];
   const pluginAssemblies:          PluginAssemblyDefinition[]          = [];
+  const modernArtifacts = discoverModernArtifacts(zip);
 
   if (customizationsXml) {
     const doc = xmlParser.parse(customizationsXml) as Record<string, unknown>;
@@ -2194,6 +2256,7 @@ export async function parseSolutionZip(
     reports,
     dashboards,
     pluginAssemblies,
+    ...modernArtifacts,
     warnings,
   };
 

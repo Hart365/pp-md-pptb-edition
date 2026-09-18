@@ -79,6 +79,14 @@ const nonTextChecks = [
   ['color-sidebar-item-active', 'color-sidebar-bg', 3.0],
 ];
 
+const privilegeBadgeChecks = [
+  ['#1f2937', '#fee2e2', 4.5],
+  ['#1f2937', '#fef9c3', 4.5],
+  ['#1f2937', '#dbeafe', 4.5],
+  ['#1f2937', '#ede9fe', 4.5],
+  ['#1f2937', '#dcfce7', 4.5],
+];
+
 function evaluateTheme(name, vars) {
   const failures = [];
   const outputs = [];
@@ -110,6 +118,12 @@ function evaluateTheme(name, vars) {
 
   runChecks(textChecks, 'text');
   runChecks(nonTextChecks, 'non-text');
+  privilegeBadgeChecks.forEach(([foreground, background, min]) => {
+    const ratio = contrastRatio(foreground, background);
+    const label = `privilege badge text ${foreground} on ${background}`;
+    outputs.push(`[${name}] text: ${label} = ${ratio.toFixed(2)}:1 (min ${min}:1)`);
+    if (ratio < min) failures.push(`[${name}] FAIL ${label}: ${ratio.toFixed(2)}:1 < ${min}:1`);
+  });
 
   return { outputs, failures };
 }

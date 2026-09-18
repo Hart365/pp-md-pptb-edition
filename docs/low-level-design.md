@@ -4,7 +4,7 @@
 This document details module internals, key functions, data contracts, and implementation-level behavior.
 
 ## Source Layout
-- electron/main.cjs: Desktop host runtime and browser window lifecycle
+- Power Platform ToolBox: sandboxed iframe host runtime and connection services
 - src/App.tsx: UI orchestration and application state machine
 - src/parser/solutionParser.ts: Solution ZIP and XML parsing pipeline
 - src/generator/markdownGenerator.ts: Markdown composition and diagram generation
@@ -14,25 +14,19 @@ This document details module internals, key functions, data contracts, and imple
 
 ## Module Details
 
-### Electron Main Process
-File: electron/main.cjs
+### Power Platform ToolBox Host
 
 Responsibilities:
-- configure BrowserWindow dimensions and security-related webPreferences
-- choose renderer entry point based on app.isPackaged
-- handle load and renderer-failure diagnostics
-- deny new in-app windows and route external links to system browser
-
-Control flow:
-1. app.whenReady triggers createMainWindow
-2. activate recreates a window when no windows remain (macOS convention)
-3. window-all-closed quits app for non-darwin platforms
+- inject `toolboxAPI`, `dataverseAPI`, and `powerplatformAPI` into the sandboxed iframe
+- provide active connections, settings, notifications, themes, and user-mediated file export
+- keep authentication and tokens outside the tool code
 
 ### Application Orchestration
 File: src/App.tsx
 
 Primary state:
 - results: successful solution parsing and markdown outputs
+- diagramsMarkdown: optional companion output for the consolidated All Selected Solutions document
 - activeIdx: currently selected documentation tab
 - processing: per-file progress state
 - isProcessing/statusMsg: runtime status and announcements
@@ -43,7 +37,9 @@ Key internal functions:
 - readSavedConfigurations and writeSavedConfigurations
   - localStorage persistence for custom doc presets
 - buildConsolidatedResult
-  - merges all loaded ParsedSolution objects and regenerates combined markdown
+  - merges all loaded ParsedSolution objects, preserves document context and navigation, and optionally separates diagrams
+- extractDiagramsDocument
+  - creates a standalone diagrams-only Markdown document with its own table of contents and section links
 - isLargeOrComplexMarkdown
   - computes heuristic for loading feedback on heavy markdown payloads
 - file processing callbacks
@@ -165,6 +161,7 @@ Core models:
 - SecurityRoleDefinition and FieldSecurityProfileDefinition
 - ConnectionReferenceDefinition and EnvironmentVariableDefinition
 - PluginAssemblyDefinition and PluginStepDefinition
+- AgentDefinition, AIModelDefinition, DesktopFlowDefinition, DataflowDefinition, CustomAPIDefinition, and OfflineProfileDefinition
 
 Design intent:
 - strict typing for parser-generator contract stability
@@ -175,13 +172,18 @@ Design intent:
 - Parser warnings collected for non-fatal parse gaps.
 - Component-level try/catch around variable XML structures.
 - UI status messaging for processing and validation errors.
-- Electron modal dialogs for packaged renderer load/crash failures.
+- Host notifications and accessible in-app status messages for user-visible failures.
 
 ## Performance Considerations
 - Per-file progress callbacks to avoid opaque long-running operations.
 - Heuristic loading state for large markdown rendering workloads.
-- Mermaid dynamically imported to reduce initial bundle cost.
-- Build warns for large chunks but allows diagram-heavy output needs.
+- Mermaid dynamically imported with production code splitting to reduce initial bundle cost.
+- Connected mode reads metadata only for selected solution components; it does not append environment-wide table metadata.
+- Connected role privilege and connection-reference enrichment uses direct OData queries scoped to selected role and solution identifiers when the host does not expose corresponding FetchXML entities.
+- PPTB packages Mermaid with the served entry asset because the sandbox cannot resolve secondary dynamic-import chunks.
+- The Markdown viewer supports browser-native full-text highlights and local Markdown import without Electron APIs.
+- The documentation option panels use native disclosure controls; the generation action is sticky within the options workflow.
+- Canonical PP-MD SVG and PNG assets are packaged at the manifest root and under `icons/` for host and in-app fallback rendering.
 
 ## Build and Packaging Internals
 - build-latest.ps1 executes build and both package targets, then mirrors outputs.

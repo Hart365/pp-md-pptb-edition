@@ -38,6 +38,11 @@
 }
 
 .resetBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
   background: transparent;
   border: 2px solid transparent;
   color: var(--color-text-muted);
@@ -62,7 +67,7 @@
 .list {
   list-style: none;
   padding: 0.5rem 0;
-  flex: 1;
+  flex: 0 0 auto;
 }
 
 .combinedLinkPanel {
@@ -102,10 +107,11 @@
 }
 
 .item.active {
-  background: var(--color-accent);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   font-weight: 600;
-  border-color: var(--color-accent);
+  border-color: var(--color-accent-hover);
   box-shadow: 0 0 0 2px rgba(37,99,235,0.2);
 }
 

@@ -30,24 +30,37 @@ import { SolutionSidebar }   from './components/SolutionSidebar';
 import { parseSolutionZip }  from './parser/solutionParser';
 import {
   generateMarkdown,
-  generateConsolidatedMarkdown,
   generateDependencyReportMarkdown,
   consolidateSolutions,
   fillSolutionGapsFromPeerSolutions,
+  splitMarkdownByCategory,
+  extractDiagramsDocument,
+  DEFAULT_DOCUMENTATION_SCOPE,
+  DEFAULT_DOCUMENTATION_SETTINGS,
   type DocumentContext,
+  type DocumentationScope,
+  type DocumentationSettings,
+  type DocumentationMetadataSettings,
+  type DocumentationSecurityRoleFilters,
+  type AttributeSelectionMode,
   type EnrichmentIndicators,
 } from './generator/markdownGenerator';
-import type { ParsedSolution } from './types/solution';
+import type { ParsedSolution, SolutionCollectionPolicy } from './types/solution';
 import {
   buildParsedSolutionFromDataverse,
-  enrichSolutionsWithDataverseMetadata,
   listDataverseSolutions,
   type DataverseSolutionSummary,
 } from './dataverse/solutionService';
 import { useToolboxAPI }     from './hooks/useToolboxAPI';
-import { exportMarkdown, exportZip } from './api/fileManager';
-import { showNotification }  from './api/toolboxAPI';
-import appIcon from './assets/app-icon.svg';
+import { exportMarkdown, exportZip, exportHtml, exportExcel, exportPdf } from './api/fileManager';
+import {
+  showNotification,
+  openExternalUrl,
+  isInPPTB as isInPPTBHost,
+  getSetting,
+  saveSetting,
+} from './api/toolboxAPI';
+import appIcon from './assets/pp-md-icon.svg';
 import githubMark from './assets/github-mark.svg';
 import packageJson from '../package.json';
 import styles from './App.module.css';
@@ -71,6 +84,7 @@ interface SolutionResult {
   isConsolidated?: boolean;
   peerGapFillApplied?: boolean;
   dataverseMetadataEnriched?: boolean;
+  diagramsMarkdown?: string;
 }
 
 type ErdMode = 'compact' | 'detailed-relationships';
@@ -80,6 +94,8 @@ interface GenerationPreferences {
   erdMode: ErdMode;
   includeDiagrams: boolean;
   includeDefaultColumns: boolean;
+  scope: DocumentationScope;
+  documentationSettings: DocumentationSettings;
 }
 
 interface SavedDocumentConfiguration extends DocumentContext {
@@ -91,8 +107,15 @@ interface ConfigurationFile {
   configurations: SavedDocumentConfiguration[];
 }
 
+type DocumentationSettingsUpdate = Partial<Omit<DocumentationSettings, 'metadata' | 'securityRoleFilters'>> & {
+  metadata?: Partial<DocumentationMetadataSettings>;
+  securityRoleFilters?: Partial<DocumentationSecurityRoleFilters>;
+};
+
 const LOCAL_CONFIG_STORAGE_KEY = 'pp-md-pptb-edition-doc-configurations';
 const LOCAL_HIDDEN_CONFIG_IDS_KEY = 'pp-md-pptb-edition-hidden-doc-configuration-ids';
+const DATAVERSE_COLLECTION_POLICY_STORAGE_KEY = 'pp-md-pptb-edition-dataverse-collection-policy';
+const DEFAULT_DATAVERSE_COLLECTION_POLICY: SolutionCollectionPolicy = 'solutionOnly';
 
 const EMPTY_DOCUMENT_CONTEXT: DocumentContext = {
   client: '',
@@ -104,9 +127,12 @@ const EMPTY_DOCUMENT_CONTEXT: DocumentContext = {
 };
 
 const APP_VERSION = packageJson.version;
-const GITHUB_REPO_URL = typeof packageJson.repository === 'string'
-  ? packageJson.repository
-  : packageJson.repository?.url ?? 'https://github.com';
+/** Prefer the PPTB manifest's repository URL; fall back to npm's repository field, normalized to a browsable https URL. */
+const GITHUB_REPO_URL = packageJson.configurations?.repository
+  || (typeof packageJson.repository === 'string'
+    ? packageJson.repository
+    : packageJson.repository?.url?.replace(/^git\+/, '').replace(/\.git$/, ''))
+  || 'https://github.com';
 const WEBSITE_URL = 'https://HartOfTheMidlands.co.uk';
 
 function toSafeMarkdownBaseName(rawName: string | undefined | null, fallback: string): string {
@@ -147,7 +173,13 @@ function isInvalidArchiveError(message: string): boolean {
   return /invalid|zip|archive|solution\.xml|central directory/i.test(message);
 }
 
-function readSavedConfigurations(): SavedDocumentConfiguration[] {
+async function readSavedConfigurations(): Promise<SavedDocumentConfiguration[]> {
+  if (isInPPTBHost()) {
+    const raw = await getSetting<SavedDocumentConfiguration[]>(LOCAL_CONFIG_STORAGE_KEY);
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((entry) => !!entry?.id && !!entry?.name);
+  }
+
   try {
     const raw = localStorage.getItem(LOCAL_CONFIG_STORAGE_KEY);
     if (!raw) return [];
@@ -163,7 +195,12 @@ function readSavedConfigurations(): SavedDocumentConfiguration[] {
   }
 }
 
-function writeSavedConfigurations(configs: SavedDocumentConfiguration[]): void {
+async function writeSavedConfigurations(configs: SavedDocumentConfiguration[]): Promise<void> {
+  if (isInPPTBHost()) {
+    await saveSetting(LOCAL_CONFIG_STORAGE_KEY, configs);
+    return;
+  }
+
   try {
     localStorage.setItem(LOCAL_CONFIG_STORAGE_KEY, JSON.stringify(configs));
   } catch {
@@ -171,7 +208,13 @@ function writeSavedConfigurations(configs: SavedDocumentConfiguration[]): void {
   }
 }
 
-function readHiddenConfigurationIds(): string[] {
+async function readHiddenConfigurationIds(): Promise<string[]> {
+  if (isInPPTBHost()) {
+    const raw = await getSetting<string[]>(LOCAL_HIDDEN_CONFIG_IDS_KEY);
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+  }
+
   try {
     const raw = localStorage.getItem(LOCAL_HIDDEN_CONFIG_IDS_KEY);
     if (!raw) return [];
@@ -183,7 +226,12 @@ function readHiddenConfigurationIds(): string[] {
   }
 }
 
-function writeHiddenConfigurationIds(ids: string[]): void {
+async function writeHiddenConfigurationIds(ids: string[]): Promise<void> {
+  if (isInPPTBHost()) {
+    await saveSetting(LOCAL_HIDDEN_CONFIG_IDS_KEY, ids);
+    return;
+  }
+
   try {
     localStorage.setItem(LOCAL_HIDDEN_CONFIG_IDS_KEY, JSON.stringify(ids));
   } catch {
@@ -202,28 +250,75 @@ function buildConsolidatedResult(
     peerGapFillApplied: results.some((result) => result.peerGapFillApplied),
     dataverseMetadataEnriched: results.some((result) => result.dataverseMetadataEnriched),
   };
-  const summaryMarkdown = generateConsolidatedMarkdown(solutions, {
-    documentContext,
-    enrichmentIndicators: indicators,
-    includeDiagrams: generationPreferences.includeDiagrams,
-    includeDefaultColumns: generationPreferences.includeDefaultColumns,
-  });
-  const detailedMarkdown = generateMarkdown(aggregated, {
+  const fullMarkdownWithDiagrams = generateMarkdown(aggregated, {
     erdMode: generationPreferences.erdMode,
     documentContext,
     enrichmentIndicators: indicators,
     includeDiagrams: generationPreferences.includeDiagrams,
     includeDefaultColumns: generationPreferences.includeDefaultColumns,
+    scope: generationPreferences.scope,
+    documentationSettings: generationPreferences.documentationSettings,
   });
-  const markdown = `${summaryMarkdown}\n\n---\n\n${detailedMarkdown}`;
+  const diagramsMarkdown = generationPreferences.includeDiagrams
+    ? extractDiagramsDocument(fullMarkdownWithDiagrams, 'All Selected Solutions: Diagrams')
+    : undefined;
+  const markdown = generationPreferences.includeDiagrams
+    ? generateMarkdown(aggregated, {
+      erdMode: generationPreferences.erdMode,
+      documentContext,
+      enrichmentIndicators: indicators,
+      includeDiagrams: false,
+      includeDefaultColumns: generationPreferences.includeDefaultColumns,
+      scope: generationPreferences.scope,
+      documentationSettings: generationPreferences.documentationSettings,
+    })
+    : fullMarkdownWithDiagrams;
 
   return {
     solution: aggregated,
     markdown,
     fileName: 'all-selected-solutions.md',
     isConsolidated: true,
+    diagramsMarkdown,
     peerGapFillApplied: indicators.peerGapFillApplied,
     dataverseMetadataEnriched: indicators.dataverseMetadataEnriched,
+  };
+}
+
+function generateSolutionDocument(
+  solution: ParsedSolution,
+  generationPreferences: GenerationPreferences,
+  documentContext: DocumentContext,
+  enrichmentIndicators?: EnrichmentIndicators,
+): Pick<SolutionResult, 'markdown' | 'diagramsMarkdown'> {
+  const fullMarkdownWithDiagrams = generateMarkdown(solution, {
+    erdMode: generationPreferences.erdMode,
+    documentContext,
+    enrichmentIndicators,
+    includeDiagrams: generationPreferences.includeDiagrams,
+    includeDefaultColumns: generationPreferences.includeDefaultColumns,
+    scope: generationPreferences.scope,
+    documentationSettings: generationPreferences.documentationSettings,
+  });
+  const shouldSeparate = generationPreferences.includeDiagrams
+    && (generationPreferences.documentationSettings.separateDiagramsDocument || isLargeOrComplexMarkdown(fullMarkdownWithDiagrams));
+  const diagramsMarkdown = shouldSeparate
+    ? extractDiagramsDocument(fullMarkdownWithDiagrams, `${solution.metadata.displayName || solution.metadata.uniqueName}: Diagrams`)
+    : undefined;
+
+  return {
+    markdown: shouldSeparate
+      ? generateMarkdown(solution, {
+        erdMode: generationPreferences.erdMode,
+        documentContext,
+        enrichmentIndicators,
+        includeDiagrams: false,
+        includeDefaultColumns: generationPreferences.includeDefaultColumns,
+        scope: generationPreferences.scope,
+        documentationSettings: generationPreferences.documentationSettings,
+      })
+      : fullMarkdownWithDiagrams,
+    diagramsMarkdown: diagramsMarkdown || undefined,
   };
 }
 
@@ -241,20 +336,17 @@ function buildResultsWithCombinedDocument(
       .map((peer) => peer.solution);
     const enrichedSolution = fillSolutionGapsFromPeerSolutions(entry.solution, peerSolutions);
 
+    const document = generateSolutionDocument(enrichedSolution, generationPreferences, documentContext, resultEnrichmentIndicators({
+      peerGapFillApplied: peerSolutions.length > 0,
+      dataverseMetadataEnriched: entry.dataverseMetadataEnriched,
+    }));
+
     return {
       ...entry,
       solution: enrichedSolution,
       peerGapFillApplied: peerSolutions.length > 0,
-      markdown: generateMarkdown(enrichedSolution, {
-        erdMode: generationPreferences.erdMode,
-        documentContext,
-        includeDiagrams: generationPreferences.includeDiagrams,
-        includeDefaultColumns: generationPreferences.includeDefaultColumns,
-        enrichmentIndicators: resultEnrichmentIndicators({
-          peerGapFillApplied: peerSolutions.length > 0,
-          dataverseMetadataEnriched: entry.dataverseMetadataEnriched,
-        }),
-      }),
+      markdown: document.markdown,
+      diagramsMarkdown: document.diagramsMarkdown,
     };
   });
 
@@ -329,6 +421,10 @@ export default function App() {
   const [includeDiagrams, setIncludeDiagrams] = useState<boolean>(true);
   /** Include default/system columns in table documentation */
   const [includeDefaultColumns, setIncludeDefaultColumns] = useState<boolean>(true);
+  /** Optional documentation sections selected for output. */
+  const [documentationScope, setDocumentationScope] = useState<DocumentationScope>(DEFAULT_DOCUMENTATION_SCOPE);
+  /** Table, role, and diagram options matching standalone PP-MD. */
+  const [documentationSettings, setDocumentationSettings] = useState<DocumentationSettings>(DEFAULT_DOCUMENTATION_SETTINGS);
   /** Document context for MD header details */
   const [documentContext, setDocumentContext] = useState<DocumentContext>(EMPTY_DOCUMENT_CONTEXT);
   /** Preset configurations loaded from JSON */
@@ -341,6 +437,7 @@ export default function App() {
   const [newConfigName, setNewConfigName] = useState<string>('');
   /** True when switching to a heavy markdown document so we can show feedback */
   const [isViewerLoading, setIsViewerLoading] = useState<boolean>(false);
+  const [showCompanionDiagrams, setShowCompanionDiagrams] = useState<boolean>(false);
   /** Launch mode selected by the user */
   const [launchMode, setLaunchMode] = useState<LaunchMode | null>(null);
   /** Solutions read from the active Dataverse environment */
@@ -359,6 +456,7 @@ export default function App() {
   const [selectedPublishers, setSelectedPublishers] = useState<string[]>([]);
   /** Selected Dataverse solution IDs for batch generation */
   const [selectedDataverseSolutionIds, setSelectedDataverseSolutionIds] = useState<string[]>([]);
+  const [dataverseCollectionPolicy, setDataverseCollectionPolicy] = useState<SolutionCollectionPolicy>(DEFAULT_DATAVERSE_COLLECTION_POLICY);
   /** Dataverse solution IDs currently being processed */
   const [busySolutionIds, setBusySolutionIds] = useState<string[]>([]);
   /** ZIP files queued in local mode drop zone */
@@ -369,13 +467,18 @@ export default function App() {
   const [invalidArchiveMessage, setInvalidArchiveMessage] = useState<string | null>(null);
   /** Whether standalone dependency report export is enabled */
   const [includeDependencyReport, setIncludeDependencyReport] = useState<boolean>(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const headerExportMenuRef = useRef<HTMLDetailsElement>(null);
   const invalidArchiveOkRef = useRef<HTMLButtonElement | null>(null);
+  const markdownImportRef = useRef<HTMLInputElement | null>(null);
 
   const generationPreferences = useMemo<GenerationPreferences>(() => ({
     erdMode,
     includeDiagrams,
     includeDefaultColumns,
-  }), [erdMode, includeDiagrams, includeDefaultColumns]);
+    scope: documentationScope,
+    documentationSettings,
+  }), [erdMode, includeDiagrams, includeDefaultColumns, documentationScope, documentationSettings]);
 
   /**
    * Guard against host click-through on startup opening external links.
@@ -389,14 +492,24 @@ export default function App() {
   const handleExternalLinkClick = useCallback((event: ReactMouseEvent<HTMLAnchorElement>) => {
     const anchor = event.currentTarget;
     const armed = anchor.dataset.ppmdArmed === 'true';
+    const href = anchor.href;
     delete anchor.dataset.ppmdArmed;
 
     // Keyboard-triggered anchor activation should continue to work.
-    if (event.detail === 0) return;
+    const isKeyboardActivation = event.detail === 0;
 
-    if (!armed) {
+    if (!isKeyboardActivation && !armed) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+
+    // Inside PPTB, target="_blank" anchor clicks are silently swallowed by the
+    // host webview, so route the navigation through the ToolBox's external
+    // browser bridge instead (falls back to normal anchor behaviour otherwise).
+    if (isInPPTBHost()) {
+      event.preventDefault();
+      void openExternalUrl(href);
     }
   }, []);
 
@@ -425,9 +538,35 @@ export default function App() {
   useEffect(() => {
     let active = true;
 
+    const loadDataverseCollectionPolicy = async () => {
+      try {
+        const savedPolicy = await getSetting<SolutionCollectionPolicy>(DATAVERSE_COLLECTION_POLICY_STORAGE_KEY);
+        if (!active) return;
+        if (savedPolicy === 'solutionOnly' || savedPolicy === 'solutionAndDirectReferences' || savedPolicy === 'environmentAppendix') {
+          setDataverseCollectionPolicy(savedPolicy);
+        }
+      } catch {
+        // Ignore saved policy issues and fall back to the default.
+      }
+    };
+
+    void loadDataverseCollectionPolicy();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    void saveSetting(DATAVERSE_COLLECTION_POLICY_STORAGE_KEY, dataverseCollectionPolicy);
+  }, [dataverseCollectionPolicy]);
+
+  useEffect(() => {
+    let active = true;
+
     const loadConfigurations = async () => {
-      const localConfigs = readSavedConfigurations();
-      const hiddenConfigIds = new Set(readHiddenConfigurationIds());
+      const localConfigs = await readSavedConfigurations();
+      const hiddenConfigIds = new Set(await readHiddenConfigurationIds());
 
       try {
         const response = await fetch('./doc-configurations.json', { cache: 'no-store' });
@@ -500,7 +639,7 @@ export default function App() {
     setResults((prev) => rebuildResults(prev, generationPreferences, nextDocumentContext));
   }, [documentContext, generationPreferences]);
 
-  const handleSaveConfiguration = useCallback(() => {
+  const handleSaveConfiguration = useCallback(async () => {
     const name = newConfigName.trim();
     if (!name) {
       setStatusMsg('Please enter a configuration name before saving.');
@@ -519,10 +658,10 @@ export default function App() {
       releaseDate: documentContext.releaseDate,
     };
 
-    const savedConfigs = readSavedConfigurations();
+    const savedConfigs = await readSavedConfigurations();
     const withoutExistingName = savedConfigs.filter((cfg) => cfg.name.toLowerCase() !== name.toLowerCase());
     const updatedSavedConfigs = [...withoutExistingName, configToSave];
-    writeSavedConfigurations(updatedSavedConfigs);
+    await writeSavedConfigurations(updatedSavedConfigs);
 
     setConfigurations((prev) => {
       const withoutExistingNameInDropdown = prev.filter((cfg) => cfg.name.toLowerCase() !== name.toLowerCase());
@@ -533,18 +672,18 @@ export default function App() {
     setStatusMsg(`Configuration "${name}" saved.`);
   }, [newConfigName, documentContext]);
 
-  const handleDeleteConfiguration = useCallback((configId: string) => {
+  const handleDeleteConfiguration = useCallback(async (configId: string) => {
     if (configId === 'custom') return;
 
     const configToDelete = configurations.find((config) => config.id === configId);
     if (!configToDelete) return;
 
-    const updatedHiddenIds = Array.from(new Set([...readHiddenConfigurationIds(), configId]));
-    writeHiddenConfigurationIds(updatedHiddenIds);
+    const updatedHiddenIds = Array.from(new Set([...await readHiddenConfigurationIds(), configId]));
+    await writeHiddenConfigurationIds(updatedHiddenIds);
 
     if (configId.startsWith('local-')) {
-      const updatedSaved = readSavedConfigurations().filter((config) => config.id !== configId);
-      writeSavedConfigurations(updatedSaved);
+      const updatedSaved = (await readSavedConfigurations()).filter((config) => config.id !== configId);
+      await writeSavedConfigurations(updatedSaved);
     }
 
     setConfigurations((prev) => prev.filter((config) => config.id !== configId));
@@ -626,6 +765,34 @@ export default function App() {
     setStatusMsg('Choose how you want to generate solution documentation.');
   }, []);
 
+  /** Open Markdown locally without requiring Electron or host file APIs. */
+  const handleMarkdownImport = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const markdown = await file.text();
+      const displayName = file.name.replace(/\.md$/i, '') || 'Imported Markdown';
+      const imported: ParsedSolution = {
+        metadata: { uniqueName: displayName, displayName, version: '', publisherName: '', isManaged: false },
+        entities: [], optionSets: [], forms: [], views: [], processes: [], apps: [], webResources: [],
+        securityRoles: [], fieldSecurityProfiles: [], connectionReferences: [], environmentVariables: [],
+        emailTemplates: [], reports: [], dashboards: [], pluginAssemblies: [], warnings: [],
+        agents: [], aiModels: [], desktopFlows: [], dataflows: [], customApis: [], offlineProfiles: [],
+      };
+      setResults((current) => [...current.filter((result) => !result.isConsolidated), {
+        solution: imported,
+        markdown,
+        fileName: file.name,
+      }]);
+      setActiveIdx(results.filter((result) => !result.isConsolidated).length);
+      setStatusMsg(`Opened ${file.name}.`);
+    } catch {
+      setStatusMsg(`Could not open ${file.name}.`);
+    }
+  }, [results]);
+
   const updateProcessingEntry = useCallback(
     (index: number, updater: (entry: ProcessingEntry) => ProcessingEntry) => {
       setProcessing((prev) => {
@@ -679,6 +846,8 @@ export default function App() {
           documentContext,
           includeDiagrams,
           includeDefaultColumns,
+          scope: documentationScope,
+          documentationSettings,
         });
 
         newResults.push({ solution, markdown, fileName: file.name });
@@ -729,6 +898,8 @@ export default function App() {
     documentContext,
     includeDiagrams,
     includeDefaultColumns,
+    documentationScope,
+    documentationSettings,
     generationPreferences,
     updateProcessingEntry,
   ]);
@@ -767,13 +938,15 @@ export default function App() {
         const solution = await buildParsedSolutionFromDataverse(summary.solutionId, ({ message, percent }) => {
           setStatusMsg(message);
           updateProcessingEntry(index, (entry) => ({ ...entry, progress: percent }));
-        });
+        }, dataverseCollectionPolicy);
 
         const markdown = generateMarkdown(solution, {
           erdMode,
           documentContext,
           includeDiagrams,
           includeDefaultColumns,
+          scope: documentationScope,
+          documentationSettings,
         });
         generatedResults.push({
           solution,
@@ -788,29 +961,9 @@ export default function App() {
       const existingBase = results.filter((entry) => !entry.isConsolidated);
       const mergedBase = sortSolutionResults([...existingBase, ...generatedResults]);
 
-      let metadataEnrichedBase = mergedBase;
-      try {
-        const enrichedSolutions = await enrichSolutionsWithDataverseMetadata(
-          mergedBase.map((entry) => entry.solution),
-          ({ message }) => {
-            setStatusMsg(message);
-          },
-        );
-        metadataEnrichedBase = mergedBase.map((entry, index) => ({
-          ...entry,
-          solution: enrichedSolutions[index] ?? entry.solution,
-          dataverseMetadataEnriched: entry.fileName.endsWith('.dataverse')
-            ? true
-            : entry.dataverseMetadataEnriched,
-        }));
-      } catch (metadataError) {
-        const metadataMessage = metadataError instanceof Error
-          ? metadataError.message
-          : 'Unable to enrich selected solutions with Dataverse metadata.';
-        setStatusMsg(`Dataverse metadata enrichment warning: ${metadataMessage}`);
-      }
-
-      const nextResults = buildResultsWithCombinedDocument(metadataEnrichedBase, generationPreferences, documentContext);
+      // Connected collection already reads metadata for every selected table.
+      // Do not enumerate the environment again for cross-solution enrichment.
+      const nextResults = buildResultsWithCombinedDocument(mergedBase, generationPreferences, documentContext);
 
       setResults(nextResults);
       setActiveIdx(getLastBaseResultIndex(nextResults));
@@ -838,12 +991,20 @@ export default function App() {
     erdMode,
     includeDiagrams,
     includeDefaultColumns,
+    documentationScope,
+    documentationSettings,
     generationPreferences,
     initializeConnection,
     results,
     selectedDataverseSolutionIds,
+    dataverseCollectionPolicy,
     updateProcessingEntry,
   ]);
+
+  const handleDataverseCollectionPolicyChange = useCallback((nextPolicy: SolutionCollectionPolicy) => {
+    setDataverseCollectionPolicy(nextPolicy);
+    setStatusMsg(`Dataverse collection policy set to ${nextPolicy}.`);
+  }, []);
 
   const handleTogglePublisher = useCallback((publisher: string) => {
     setSelectedPublishers((prev) => (
@@ -920,6 +1081,22 @@ export default function App() {
       : 'Include Default Columns disabled. Default/system columns will be excluded.');
   }, [includeDefaultColumns, generationPreferences, documentContext]);
 
+  const handleScopeToggle = useCallback((section: keyof DocumentationScope) => {
+    setDocumentationScope((current) => {
+      const next = { ...current, [section]: !current[section] };
+      setResults((results) => rebuildResults(results, { ...generationPreferences, scope: next }, documentContext));
+      return next;
+    });
+  }, [documentContext, generationPreferences]);
+
+  const handleDocumentationSettingsChange = useCallback((update: DocumentationSettingsUpdate) => {
+    setDocumentationSettings((current) => {
+      const next = { ...current, ...update, metadata: { ...current.metadata, ...update.metadata }, securityRoleFilters: { ...current.securityRoleFilters, ...update.securityRoleFilters } };
+      setResults((results) => rebuildResults(results, { ...generationPreferences, documentationSettings: next }, documentContext));
+      return next;
+    });
+  }, [documentContext, generationPreferences]);
+
   const handleGenerateLocalQueuedSolutions = useCallback(() => {
     if (isProcessing || queuedLocalFiles.length === 0) return;
     const filesToGenerate = sortFilesByName(queuedLocalFiles);
@@ -935,6 +1112,7 @@ export default function App() {
   const handleSelectResult = useCallback((index: number) => {
     const next = results[index];
     if (!next) return;
+    setShowCompanionDiagrams(false);
 
     if (!isLargeOrComplexMarkdown(next.markdown)) {
       setActiveIdx(index);
@@ -953,6 +1131,15 @@ export default function App() {
     }, 50);
   }, [results]);
 
+  const handleSelectCompanionDiagrams = useCallback((resultIndex = activeIdx) => {
+    const next = results[resultIndex];
+    if (!next?.diagramsMarkdown) return;
+    setActiveIdx(resultIndex);
+    setShowCompanionDiagrams(true);
+    setIsViewerLoading(isLargeOrComplexMarkdown(next.diagramsMarkdown));
+    window.setTimeout(() => setIsViewerLoading(false), 350);
+  }, [activeIdx, results]);
+
   // ── Export ────────────────────────────────────────────────────────────────
 
   /**
@@ -961,16 +1148,63 @@ export default function App() {
   const handleExport = useCallback(async () => {
     const result = results[activeIdx];
     if (!result) return;
+    const markdown = showCompanionDiagrams ? result.diagramsMarkdown : result.markdown;
+    if (!markdown) return;
     const safeName = toSafeMarkdownBaseName(
       result.solution.metadata.displayName || result.solution.metadata.uniqueName,
       'solution',
     );
     try {
-      await exportMarkdown(result.markdown, `${safeName}-documentation`);
+      await exportMarkdown(markdown, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`);
       await showNotification('Export Successful', 'Markdown document exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('Export failed:', error);
       await showNotification('Export Failed', 'Failed to export markdown document.', 'error', 3000);
+    }
+  }, [results, activeIdx, showCompanionDiagrams]);
+
+  /**
+   * Exports the active solution's rendered documentation as a standalone .html file.
+   */
+  const handleExportHtml = useCallback(async (html: string) => {
+    const result = results[activeIdx];
+    if (!result) return;
+    const safeName = toSafeMarkdownBaseName(
+      result.solution.metadata.displayName || result.solution.metadata.uniqueName,
+      'solution',
+    );
+    try {
+      await exportHtml(html, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`);
+      await showNotification('Export Successful', 'HTML document exported successfully.', 'success', 3000);
+    } catch (error) {
+      console.error('HTML export failed:', error);
+      await showNotification('Export Failed', 'Failed to export HTML document.', 'error', 3000);
+    }
+  }, [results, activeIdx, showCompanionDiagrams]);
+
+  const handleExportExcel = useCallback(async () => {
+    const result = results[activeIdx];
+    if (!result) return;
+    const safeName = toSafeMarkdownBaseName(result.solution.metadata.displayName || result.solution.metadata.uniqueName, 'solution');
+    try {
+      await exportExcel(result.solution, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`);
+      await showNotification('Export Successful', 'Excel workbook exported successfully.', 'success', 3000);
+    } catch (error) {
+      console.error('Excel export failed:', error);
+      await showNotification('Export Failed', 'Failed to export Excel workbook.', 'error', 3000);
+    }
+  }, [results, activeIdx, showCompanionDiagrams]);
+
+  const handleExportPdf = useCallback(async (markdown: string, renderedTitle: string, diagramImages: ReadonlyArray<string | null>) => {
+    const result = results[activeIdx];
+    if (!result) return;
+    const safeName = toSafeMarkdownBaseName(renderedTitle, 'solution');
+    try {
+      await exportPdf(markdown, renderedTitle, `${safeName}-documentation`, diagramImages);
+      await showNotification('Export Successful', 'PDF document exported successfully.', 'success', 3000);
+    } catch (error) {
+      console.error('PDF export failed:', error);
+      await showNotification('Export Failed', 'Failed to export PDF document.', 'error', 3000);
     }
   }, [results, activeIdx]);
 
@@ -1012,6 +1246,9 @@ export default function App() {
         );
         const suffix = result.isConsolidated ? '-summary.md' : '-documentation.md';
         zip.file(`${safeName}${suffix}`, result.markdown);
+        if (result.diagramsMarkdown) {
+          zip.file(`${safeName}-diagrams.md`, result.diagramsMarkdown);
+        }
 
         if (includeDependencyReport && !result.isConsolidated) {
           const reportMarkdown = generateDependencyReportMarkdown(result.solution, { documentContext });
@@ -1034,6 +1271,44 @@ export default function App() {
       await showNotification('Export Failed', 'Failed to export markdown documents as ZIP.', 'error', 3000);
     }
   }, [results, includeDependencyReport, documentContext]);
+
+  /**
+   * Exports each solution's documentation split into logically-grouped files
+   * plus the consolidated All Selected Solutions document, as a single ZIP
+   * archive. Each folder also includes its companion diagrams when present.
+   */
+  const handleExportByCategory = useCallback(async () => {
+    if (results.length === 0) return;
+
+    try {
+      const zip = new JSZip();
+      results.forEach((result, idx) => {
+        const safeName = toSafeMarkdownBaseName(
+          result.solution.metadata.displayName || result.solution.metadata.uniqueName,
+          result.isConsolidated ? 'all-selected-solutions' : `solution_${idx + 1}`,
+        );
+        const folder = zip.folder(safeName);
+        const categoryFiles = splitMarkdownByCategory(result.markdown);
+        if (categoryFiles.length === 0) {
+          folder?.file(`${safeName}-documentation.md`, result.markdown);
+        } else {
+          categoryFiles.forEach((file) => {
+            folder?.file(`${safeName}-${file.key}.md`, file.markdown);
+          });
+        }
+        if (result.diagramsMarkdown) {
+          folder?.file(`${safeName}-diagrams.md`, result.diagramsMarkdown);
+        }
+      });
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      await exportZip(blob, 'pp-md-pptb-edition-markdown-by-category');
+      await showNotification('Export Successful', 'Documentation exported as category-grouped ZIP.', 'success', 3000);
+    } catch (error) {
+      console.error('Export by category failed:', error);
+      await showNotification('Export Failed', 'Failed to export category-grouped documentation.', 'error', 3000);
+    }
+  }, [results]);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
 
@@ -1111,6 +1386,14 @@ export default function App() {
         Skip to main content
       </a>
 
+      <input
+        ref={markdownImportRef}
+        type="file"
+        accept="text/markdown,.md"
+        className="sr-only"
+        onChange={handleMarkdownImport}
+      />
+
       {/* ── Global header ─────────────────────────────────────────────── */}
       <header className={styles.header} role="banner">
         <div className={styles.headerInner}>
@@ -1122,9 +1405,6 @@ export default function App() {
                 <span className={styles.brandTagline}>Power Platform Documentation Generator</span>
               </div>
             </div>
-          </div>
-
-          <div className={styles.headerCenter}>
             <span className={styles.connectionText}>
               {pptbLoading
                 ? 'Connecting to ToolBox...'
@@ -1135,7 +1415,20 @@ export default function App() {
           </div>
 
           <div className={styles.headerRight}>
-            <div className={styles.headerActions}>
+            <button type="button" className={styles.menuToggle} onClick={() => setHeaderMenuOpen((open) => !open)} aria-expanded={headerMenuOpen} aria-controls="header-actions" aria-label="Open toolbar menu">
+              <span aria-hidden="true">☰</span>
+            </button>
+            <div id="header-actions" className={`${styles.headerActions} ${headerMenuOpen ? styles.headerMenuOpen : ''}`}>
+            <div className={styles.headerGroup} role="group" aria-label="Document tools">
+            {!isProcessing && (
+              <button
+                type="button"
+                className={styles.headerBtn}
+                onClick={() => markdownImportRef.current?.click()}
+              >
+                Open .MD
+              </button>
+            )}
             {hasResults && !isProcessing && (
               <button
                 type="button"
@@ -1147,45 +1440,40 @@ export default function App() {
               </button>
             )}
 
-            {hasResults && !isProcessing && (
+            {hasResults && !isProcessing && activeResult?.diagramsMarkdown && (
               <button
                 type="button"
-                className={`${styles.headerBtn} ${includeDependencyReport ? styles.headerBtnActive : ''}`}
+                className={`${styles.headerBtn} ${showCompanionDiagrams ? styles.headerBtnActive : ''}`}
                 onClick={() => {
-                  const next = !includeDependencyReport;
-                  setIncludeDependencyReport(next);
-                  setStatusMsg(next
-                    ? 'Standalone dependency report export enabled.'
-                    : 'Standalone dependency report export disabled.');
+                  if (showCompanionDiagrams) {
+                    setShowCompanionDiagrams(false);
+                  } else {
+                    handleSelectCompanionDiagrams(activeIdx);
+                  }
                 }}
-                aria-label="Toggle standalone dependency report export"
+                aria-label={showCompanionDiagrams ? 'View main documentation' : 'View companion diagrams'}
               >
-                {includeDependencyReport ? 'Dependency Report: On' : 'Dependency Report: Off'}
+                {showCompanionDiagrams ? 'Main Document' : 'Companion Diagrams'}
               </button>
             )}
+            </div>
 
-            {hasResults && !isProcessing && includeDependencyReport && (
-              <button
-                type="button"
-                className={styles.headerBtn}
-                onClick={handleExportDependencyReport}
-                aria-label="Download standalone dependency report"
-              >
-                ⬇ Dependency .md
-              </button>
-            )}
+            <div className={`${styles.headerGroup} ${styles.headerExportGroup}`} role="group" aria-label="Documentation exports">
+            {hasResults && !isProcessing && <details ref={headerExportMenuRef} className={styles.headerExportMenu}>
+              <summary className={`${styles.headerBtn} ${styles.headerExportTrigger}`}>
+                <span className={styles.headerExportLabel}>Export</span>
+                <span className={styles.headerDropdownArrow} aria-hidden="true">▼</span>
+              </summary>
+              <div className={styles.headerExportPanel}>
+                <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAll(); }}>All Markdown{includeDependencyReport ? ' + Dependencies' : ''}</button>
+                <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportByCategory(); }}>By Category</button>
+                <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); setIncludeDependencyReport((enabled) => !enabled); }}>{includeDependencyReport ? 'Disable Dependency Reports' : 'Include Dependency Reports'}</button>
+                {includeDependencyReport && <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportDependencyReport(); }}>Dependency Report</button>}
+              </div>
+            </details>}
+            </div>
 
-            {hasResults && !isProcessing && (
-              <button
-                type="button"
-                className={styles.headerBtn}
-                onClick={handleExportAll}
-                aria-label="Download all generated Markdown files"
-              >
-                {includeDependencyReport ? '⬇ All + Dependencies' : '⬇ All .md'}
-              </button>
-            )}
-
+            <div className={styles.headerGroup} role="group" aria-label="Session actions">
             {hasResults && !isProcessing && (
               <button
                 type="button"
@@ -1193,7 +1481,7 @@ export default function App() {
                 onClick={handleReset}
                 aria-label="Clear all results and add new files"
               >
-                ＋ New
+                + New
               </button>
             )}
             {launchMode && (
@@ -1206,6 +1494,7 @@ export default function App() {
                 Change Mode
               </button>
             )}
+            </div>
             </div>
           </div>
         </div>
@@ -1232,13 +1521,16 @@ export default function App() {
             solutions={results.map((r) => r.solution)}
             activeIndex={activeIdx}
             combinedIndex={combinedResultIndex}
+            diagramsAvailable={Boolean(results[combinedResultIndex]?.diagramsMarkdown)}
+            diagramsActive={showCompanionDiagrams}
+            onSelectDiagrams={() => handleSelectCompanionDiagrams(combinedResultIndex)}
             onSelect={handleSelectResult}
             onReset={handleReset}
           />
         )}
 
         {/* Main content */}
-        <main id="main-content" className={styles.main} tabIndex={-1}>
+        <main id="main-content" className={`${styles.main} ${hasResults ? styles.mainWithViewer : ''}`} tabIndex={-1}>
 
           {/* Launch mode / local / connected screens */}
           {(shouldShowModeSelection || isWelcome || shouldShowDataverseBrowser) && (
@@ -1254,12 +1546,13 @@ export default function App() {
                   <p className={styles.welcomeSubtitle}>
                     Start with local ZIP files or connect to Dataverse and read solution metadata directly from the active environment.
                   </p>
+                  <p className={styles.modeVersion}>PP-MD - PPTB Edition version {displayVersion}</p>
 
                   <div className={styles.modeGrid}>
                     <button type="button" className={styles.modeCard} onClick={() => handleSelectLaunchMode('local')}>
                       <span className={styles.modeCardTitle}>Local Solutions</span>
                       <span className={styles.modeCardBody}>
-                        Upload one or more exported solution ZIP files. No active Dataverse connection is required.
+                        Upload one or more exported solution ZIP files for local documentation generation.
                       </span>
                     </button>
 
@@ -1314,6 +1607,25 @@ export default function App() {
 
                   <section className={styles.contextPanel} aria-labelledby="context-heading">
                     <h3 id="context-heading" className={styles.contextHeading}>Document Header Details</h3>
+
+                    {launchMode === 'dataverse' && (
+                      <div className={styles.contextRow}>
+                        <label htmlFor="dataverse-policy-select" className={styles.contextLabel}>Collection Policy</label>
+                        <div className={styles.contextSelectRow}>
+                          <select
+                            id="dataverse-policy-select"
+                            className={styles.contextSelect}
+                            value={dataverseCollectionPolicy}
+                            onChange={(event) => handleDataverseCollectionPolicyChange(event.target.value as SolutionCollectionPolicy)}
+                            aria-label="Select the Dataverse collection policy"
+                          >
+                            <option value="solutionOnly">Solution only</option>
+                            <option value="solutionAndDirectReferences">Solution + direct references</option>
+                            <option value="environmentAppendix">Environment appendix</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
 
                     <div className={styles.contextRow}>
                       <label htmlFor="config-select" className={styles.contextLabel}>Configuration</label>
@@ -1466,6 +1778,85 @@ export default function App() {
                         <span>Include Default Columns</span>
                       </label>
                     </div>
+
+                    <details className={styles.optionDetails} open>
+                      <summary>Documentation Options</summary>
+                      <fieldset className={styles.documentScope}>
+                      <legend className="sr-only">Documentation Options</legend>
+                      {([
+                        ['flows', 'Flows and automation'],
+                        ['apps', 'Power Apps'],
+                        ['security', 'Security roles and profiles'],
+                        ['integration', 'Integration and SharePoint'],
+                        ['plugins', 'Plug-ins and steps'],
+                        ['reports', 'Reports and dashboards'],
+                        ['webResources', 'Web resources'],
+                        ['modernArtifacts', 'Agents, AI, desktop flows, dataflows, APIs and offline profiles'],
+                      ] as Array<[keyof DocumentationScope, string]>).map(([section, label]) => (
+                        <label key={section} className={styles.generateToggle}>
+                          <input
+                            type="checkbox"
+                            checked={documentationScope[section]}
+                            onChange={() => handleScopeToggle(section)}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                      </fieldset>
+                    </details>
+
+                    <details className={styles.optionDetails}>
+                      <summary>Table Options</summary>
+                      <fieldset className={styles.documentScope}>
+                      <legend className="sr-only">Table Options</legend>
+                      <label className={styles.optionField}>Attribute selection
+                        <select value={documentationSettings.metadata.attributeSelectionMode} onChange={(event) => handleDocumentationSettingsChange({ metadata: { attributeSelectionMode: event.target.value as AttributeSelectionMode } })}>
+                          <option value="all">All attributes</option><option value="custom-only">Custom only</option><option value="attributes-on-form">Attributes on forms</option><option value="attributes-not-on-form">Attributes not on forms</option><option value="option-set-focused">Choice columns</option><option value="unmanaged-only">Unmanaged only</option>
+                        </select>
+                      </label>
+                      <label className={styles.optionField}>Manual attributes
+                        <input value={documentationSettings.metadata.manualAttributes.join(', ')} onChange={(event) => handleDocumentationSettingsChange({ metadata: { manualAttributes: event.target.value.split(',').map((value) => value.trim()).filter(Boolean) } })} placeholder="schema_name, schema_name" />
+                      </label>
+                      {(['includeDefaultColumns', 'excludeVirtualAttributes', 'includeTypeColumn', 'includeRequiredLevelInfo', 'includeCustomColumn', 'includeAuditInfo', 'includeNotesColumn', 'includeDescriptionColumn', 'includeAdvancedFind', 'includeFieldSecurity', 'includeMetadataSource'] as const).map((key) => (
+                        <label key={key} className={styles.generateToggle}><input type="checkbox" checked={documentationSettings.metadata[key]} onChange={() => handleDocumentationSettingsChange({ metadata: { [key]: !documentationSettings.metadata[key] } })} /><span>{key.replace('include', '').replace(/([A-Z])/g, ' $1').trim()}</span></label>
+                      ))}
+                      </fieldset>
+                    </details>
+
+                    <details className={styles.optionDetails}>
+                      <summary>Security Role Options</summary>
+                      <fieldset className={styles.documentScope}>
+                      <legend className="sr-only">Security Role Options</legend>
+                      {(['onlyTablesInCurrentSolution', 'onlyCustomTables'] as const).map((key) => (
+                        <label key={key} className={styles.generateToggle}><input type="checkbox" checked={documentationSettings.securityRoleFilters[key]} onChange={() => handleDocumentationSettingsChange({ securityRoleFilters: { [key]: !documentationSettings.securityRoleFilters[key] } })} /><span>{key === 'onlyTablesInCurrentSolution' ? 'Only tables in current solution' : 'Only custom tables'}</span></label>
+                      ))}
+                      </fieldset>
+                    </details>
+
+                    <details className={styles.optionDetails}>
+                      <summary>Diagram Options</summary>
+                      <fieldset className={styles.documentScope}>
+                      <legend className="sr-only">Diagram Options</legend>
+                      <label className={styles.generateToggle}><input type="checkbox" checked={documentationSettings.separateDiagramsDocument} onChange={() => handleDocumentationSettingsChange({ separateDiagramsDocument: !documentationSettings.separateDiagramsDocument })} /><span>Generate companion diagrams document</span></label>
+                      <label className={styles.optionField}>Mermaid diagram colours
+                        <select value={documentationSettings.diagramColourTheme} onChange={(event) => handleDocumentationSettingsChange({ diagramColourTheme: event.target.value as typeof documentationSettings.diagramColourTheme })}>
+                          <option value="neutral">Neutral</option><option value="default">Default</option><option value="dark">Dark</option><option value="forest">Forest</option><option value="base">Base</option>
+                        </select>
+                      </label>
+                      </fieldset>
+                    </details>
+
+                    <div className={styles.generateFooter} role="region" aria-label="Generate documentation">
+                      {launchMode === 'local' ? (
+                        <button type="button" className={styles.generatePrimaryBtn} onClick={handleGenerateLocalQueuedSolutions} disabled={!canGenerateLocal}>
+                          Generate Documentation ({queuedLocalFiles.length})
+                        </button>
+                      ) : (
+                        <button type="button" className={styles.generatePrimaryBtn} onClick={handleGenerateSelectedDataverseSolutions} disabled={!canGenerateDataverse}>
+                          Generate Selected ({selectedDataverseSolutionIds.length})
+                        </button>
+                      )}
+                    </div>
                   </section>
 
                   {launchMode === 'local' ? (
@@ -1598,112 +1989,118 @@ export default function App() {
                 </div>
               ) : (
                 <MarkdownViewer
-                  markdown={activeResult.markdown}
-                  title={activeResult.solution.metadata.displayName || activeResult.solution.metadata.uniqueName}
+                  markdown={showCompanionDiagrams && activeResult.diagramsMarkdown ? activeResult.diagramsMarkdown : activeResult.markdown}
+                  title={showCompanionDiagrams
+                    ? `${activeResult.solution.metadata.displayName || activeResult.solution.metadata.uniqueName}: Diagrams`
+                    : activeResult.solution.metadata.displayName || activeResult.solution.metadata.uniqueName}
                   onExport={handleExport}
+                  onExportHtml={handleExportHtml}
+                  onExportExcel={handleExportExcel}
+                  onExportPdf={handleExportPdf}
+                  diagramColourTheme={documentationSettings.diagramColourTheme}
                 />
               )}
             </div>
           )}
 
+          {/* Combined, collapsed-by-default container for generating more documents and adding solutions */}
           {hasResults && !isProcessing && launchMode && (
-            <section className={styles.generatePanel} aria-labelledby="generate-more-heading">
-              <div className={styles.generatePanelHeader}>
-                <h3 id="generate-more-heading" className={styles.generatePanelHeading}>Generate More Documentation</h3>
-                <p className={styles.generatePanelSubtitle}>
-                  Apply generation settings and create additional documents from your current mode.
-                </p>
-              </div>
+            <details className={styles.addMoreDetails}>
+              <summary className={styles.addMoreSummary}>
+                + Generate More Documentation
+              </summary>
+              <div className={styles.addMoreBody}>
+                <section className={styles.generatePanel} aria-labelledby="generate-more-heading">
+                  <div className={styles.generatePanelHeader}>
+                    <h3 id="generate-more-heading" className={styles.generatePanelHeading}>Generate More Documentation</h3>
+                    <p className={styles.generatePanelSubtitle}>
+                      Apply generation settings and create additional documents from your current mode.
+                    </p>
+                  </div>
 
-              <div className={styles.generatePanelActions}>
-                {launchMode === 'local' ? (
-                  <button
-                    type="button"
-                    className={styles.generatePrimaryBtn}
-                    onClick={handleGenerateLocalQueuedSolutions}
-                    disabled={!canGenerateLocal}
-                  >
-                    Generate Documentation ({queuedLocalFiles.length})
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className={styles.generatePrimaryBtn}
-                    onClick={handleGenerateSelectedDataverseSolutions}
-                    disabled={!canGenerateDataverse}
-                  >
-                    Generate Selected ({selectedDataverseSolutionIds.length})
-                  </button>
+                  <div className={styles.generatePanelActions}>
+                    {launchMode === 'local' ? (
+                      <button
+                        type="button"
+                        className={styles.generatePrimaryBtn}
+                        onClick={handleGenerateLocalQueuedSolutions}
+                        disabled={!canGenerateLocal}
+                      >
+                        Generate Documentation ({queuedLocalFiles.length})
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className={styles.generatePrimaryBtn}
+                        onClick={handleGenerateSelectedDataverseSolutions}
+                        disabled={!canGenerateDataverse}
+                      >
+                        Generate Selected ({selectedDataverseSolutionIds.length})
+                      </button>
+                    )}
+
+                    <label className={styles.generateToggle}>
+                      <input
+                        type="checkbox"
+                        checked={includeDiagrams}
+                        onChange={handleToggleIncludeDiagrams}
+                      />
+                      <span>Generate Diagrams</span>
+                    </label>
+
+                    <label className={styles.generateToggle}>
+                      <input
+                        type="checkbox"
+                        checked={includeDefaultColumns}
+                        onChange={handleToggleIncludeDefaultColumns}
+                      />
+                      <span>Include Default Columns</span>
+                    </label>
+                  </div>
+                </section>
+
+                {/* Additional local file drop zone when results exist */}
+                {launchMode === 'local' && (
+                  <div className={styles.addMoreSubsection}>
+                    <h4 className={styles.addMoreSubheading}>Add More Solution Files</h4>
+                    <DropZone
+                      key={`add-more-${dropZoneResetToken}`}
+                      onFilesSelected={handleFilesSelected}
+                      disabled={isProcessing}
+                      onQueueChange={setQueuedLocalFiles}
+                      showGenerateButton={false}
+                    />
+                  </div>
                 )}
 
-                <label className={styles.generateToggle}>
-                  <input
-                    type="checkbox"
-                    checked={includeDiagrams}
-                    onChange={handleToggleIncludeDiagrams}
-                  />
-                  <span>Generate Diagrams</span>
-                </label>
-
-                <label className={styles.generateToggle}>
-                  <input
-                    type="checkbox"
-                    checked={includeDefaultColumns}
-                    onChange={handleToggleIncludeDefaultColumns}
-                  />
-                  <span>Include Default Columns</span>
-                </label>
-              </div>
-            </section>
-          )}
-
-          {/* Additional local file drop zone when results exist */}
-          {hasResults && !isProcessing && launchMode === 'local' && (
-            <details className={styles.addMoreDetails}>
-              <summary className={styles.addMoreSummary}>
-                ＋ Add more solution files
-              </summary>
-              <div className={styles.addMoreBody}>
-                <DropZone
-                  key={`add-more-${dropZoneResetToken}`}
-                  onFilesSelected={handleFilesSelected}
-                  disabled={isProcessing}
-                  onQueueChange={setQueuedLocalFiles}
-                  showGenerateButton={false}
-                />
-              </div>
-            </details>
-          )}
-
-          {/* Additional Dataverse browser when results exist */}
-          {hasResults && !isProcessing && launchMode === 'dataverse' && (
-            <details className={styles.addMoreDetails}>
-              <summary className={styles.addMoreSummary}>
-                ＋ Add more solutions from Dataverse
-              </summary>
-              <div className={styles.addMoreBody}>
-                <DataverseSolutionBrowser
-                  solutions={filteredDataverseSolutions}
-                  publisherOptions={publisherOptions}
-                  selectedPublishers={selectedPublishers}
-                  selectedSolutionIds={selectedDataverseSolutionIds}
-                  search={dataverseSearch}
-                  sort={dataverseSort}
-                  managedFilter={dataverseManagedFilter}
-                  isLoading={isDataverseLoading}
-                  error={dataverseError}
-                  busySolutionIds={busySolutionIds}
-                  onSearchChange={setDataverseSearch}
-                  onSortChange={setDataverseSort}
-                  onManagedFilterChange={setDataverseManagedFilter}
-                  onTogglePublisher={handleTogglePublisher}
-                  onSelectAllPublishers={handleSelectAllPublishers}
-                  onClearPublishers={handleClearPublishers}
-                  onToggleSolution={handleToggleDataverseSolution}
-                  onSelectAllVisibleSolutions={handleSelectAllVisibleDataverseSolutions}
-                  onClearSelectedSolutions={handleClearSelectedDataverseSolutions}
-                  onRefresh={() => { void loadDataverseSolutions(); }}
-                />
+                {/* Additional Dataverse browser when results exist */}
+                {launchMode === 'dataverse' && (
+                  <div className={styles.addMoreSubsection}>
+                    <h4 className={styles.addMoreSubheading}>Add More Solutions from Dataverse</h4>
+                    <DataverseSolutionBrowser
+                      solutions={filteredDataverseSolutions}
+                      publisherOptions={publisherOptions}
+                      selectedPublishers={selectedPublishers}
+                      selectedSolutionIds={selectedDataverseSolutionIds}
+                      search={dataverseSearch}
+                      sort={dataverseSort}
+                      managedFilter={dataverseManagedFilter}
+                      isLoading={isDataverseLoading}
+                      error={dataverseError}
+                      busySolutionIds={busySolutionIds}
+                      onSearchChange={setDataverseSearch}
+                      onSortChange={setDataverseSort}
+                      onManagedFilterChange={setDataverseManagedFilter}
+                      onTogglePublisher={handleTogglePublisher}
+                      onSelectAllPublishers={handleSelectAllPublishers}
+                      onClearPublishers={handleClearPublishers}
+                      onToggleSolution={handleToggleDataverseSolution}
+                      onSelectAllVisibleSolutions={handleSelectAllVisibleDataverseSolutions}
+                      onClearSelectedSolutions={handleClearSelectedDataverseSolutions}
+                      onRefresh={() => { void loadDataverseSolutions(); }}
+                    />
+                  </div>
+                )}
               </div>
             </details>
           )}

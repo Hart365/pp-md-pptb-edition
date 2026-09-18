@@ -26,16 +26,20 @@
   max-width: 60rem;
 }
 
-.refreshBtn,
 .refreshBtn {
-  border: 1px solid var(--color-accent);
-  background: var(--color-accent);
+  border: 1px solid var(--color-accent-hover);
+  /* Darker accent-hover token used as the fill to keep inverse text comfortably above 4.5:1 */
+  background: var(--color-accent-hover);
   color: var(--color-text-inverse);
   border-radius: var(--border-radius-md);
   padding: 0.55rem 0.9rem;
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+.refreshBtn:hover:not(:disabled) {
+  filter: brightness(0.9);
 }
 
 .refreshBtn:focus-visible,

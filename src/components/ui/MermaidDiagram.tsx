@@ -9,7 +9,6 @@ import { useEffect, useRef, useState, useId, useMemo } from 'react';
 
 const mermaidCfg = {
   startOnLoad: false,
-  theme: 'neutral' as const,
   securityLevel: 'strict' as const,
   fontFamily: "'Segoe UI', system-ui, sans-serif",
   themeVariables: { fontFamily: "'Segoe UI', system-ui, sans-serif", fontSize: '11px' },
@@ -29,25 +28,108 @@ const btnStyle = {
   transition: 'all var(--transition-fast)',
 } as const;
 
+/**
+ * Serializes heavy `mermaid.render()` calls across every diagram instance on
+ * the page, yielding to the browser between each one. Without this, a
+ * document with many diagrams (e.g. a consolidated multi-solution report)
+ * fires them all in the same tick and freezes/locks the viewer.
+ */
+let renderQueue: Promise<void> = Promise.resolve();
+function scheduleRender<T>(task: () => Promise<T>): Promise<T> {
+  const result = renderQueue.then(() => new Promise<T>((resolve, reject) => {
+    const run = () => { task().then(resolve, reject); };
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(run, { timeout: 500 });
+    } else {
+      setTimeout(run, 0);
+    }
+  }));
+  renderQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+/**
+ * Caches rendered SVG markup by chart+theme so re-mounting a previously
+ * rendered diagram (raw/rendered toggle, switching documents and back, etc.)
+ * is instant instead of re-running mermaid's layout engine. Stores the
+ * original render id so it can be rewritten to each consuming instance's own
+ * id, avoiding duplicate DOM ids if the same diagram appears more than once.
+ */
+const svgCache = new Map<string, { svg: string; sourceId: string }>();
+
 export interface MermaidDiagramProps {
   chart: string;
   caption?: string;
+  /** Called once this diagram finishes rendering (success or failure), with its unique id. */
+  onRendered?: (id: string) => void;
+  /** Mermaid built-in colour theme (defaults to 'neutral'). */
+  theme?: 'neutral' | 'default' | 'dark' | 'forest' | 'base';
+  /** Bypasses the viewport-proximity gate so this diagram renders immediately (e.g. before PDF export). */
+  forceRender?: boolean;
+}
+
+/**
+ * Every currently-mounted diagram registers an "activate" callback here.
+ * `forceRenderAllMountedDiagrams()` lets a caller (e.g. PDF export) tell every
+ * already-mounted diagram to render immediately without changing the
+ * `components` object passed to `react-markdown` — mutating that object
+ * would remount (and re-parse) the entire document tree, which is what
+ * previously caused a multi-second UI freeze on the first PDF export click.
+ */
+const activeDiagramActivators = new Set<() => void>();
+export function forceRenderAllMountedDiagrams(): void {
+  activeDiagramActivators.forEach((activate) => activate());
 }
 
 /**
  * Renders a Mermaid diagram with zoom/pan/fullscreen controls.
  */
-export function MermaidDiagram({ chart, caption = 'Diagram' }: MermaidDiagramProps) {
+export function MermaidDiagram({ chart, caption = 'Diagram', onRendered, theme = 'neutral', forceRender = false }: MermaidDiagramProps) {
   const figRef = useRef<HTMLElement>(null);
   const ctrRef = useRef<HTMLDivElement>(null);
   const scrlRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
   const [rendered, setRendered] = useState(false);
+  const [isNearViewport, setIsNearViewport] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [fs, setFs] = useState(false);
   const [w, setW] = useState<number | null>(null);
   const pct = useMemo(() => `${Math.round(zoom * 100)}%`, [zoom]);
   const id = useId().replace(/:/g, '_');
+
+  // Register with the module-level activator set so an external caller (PDF
+  // export) can force this diagram to render without touching react-markdown's
+  // `components` prop (see `forceRenderAllMountedDiagrams` above).
+  useEffect(() => {
+    const activate = () => setIsNearViewport(true);
+    activeDiagramActivators.add(activate);
+    return () => {
+      activeDiagramActivators.delete(activate);
+    };
+  }, []);
+
+  // Only render once the diagram is near the viewport (WCAG 2.2.2 friendly: avoids
+  // freezing the page by rendering every diagram in a large document at once).
+  useEffect(() => {
+    if (forceRender) {
+      queueMicrotask(() => setIsNearViewport(true));
+      return;
+    }
+    const el = figRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      queueMicrotask(() => setIsNearViewport(true));
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setIsNearViewport(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '400px 0px' });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [forceRender]);
 
   const fitZoom = () => {
     if (!scrlRef.current || !w) return;
@@ -77,16 +159,27 @@ export function MermaidDiagram({ chart, caption = 'Diagram' }: MermaidDiagramPro
   }, []);
 
   useEffect(() => {
+    if (!isNearViewport) return;
     let active = true;
+    const cacheKey = `${theme}::${chart}`;
 
     const render = async () => {
       try {
-        const m = (await import('mermaid')).default;
-        m.initialize(mermaidCfg);
-        if (!active) return;
         setError('');
         setRendered(false);
-        const { svg } = await m.render(`m_${id}`, chart);
+
+        const cached = svgCache.get(cacheKey);
+        let svg: string;
+        if (cached) {
+          svg = cached.sourceId === id ? cached.svg : cached.svg.split(cached.sourceId).join(id);
+        } else {
+          const m = (await import('mermaid')).default;
+          m.initialize({ ...mermaidCfg, theme });
+          if (!active) return;
+          const renderId = `m_${id}`;
+          ({ svg } = await scheduleRender(() => m.render(renderId, chart)));
+          svgCache.set(cacheKey, { svg, sourceId: id });
+        }
 
         if (!active || !ctrRef.current) return;
         ctrRef.current.innerHTML = svg;
@@ -137,12 +230,15 @@ export function MermaidDiagram({ chart, caption = 'Diagram' }: MermaidDiagramPro
         if (active) {
           setError(`Failed to render: ${(e as Error).message}`);
         }
+      } finally {
+        if (active) onRendered?.(id);
       }
     };
 
     render();
     return () => { active = false; };
-  }, [chart, caption, id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chart, caption, id, isNearViewport, theme]);
 
   const toolbarStyle = {
     display: 'flex',

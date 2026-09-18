@@ -21,6 +21,12 @@ export interface SolutionSidebarProps {
   activeIndex: number;
   /** Optional index of the combined "All Selected Solutions" document */
   combinedIndex?: number;
+  /** Whether the combined result has a separate diagrams document. */
+  diagramsAvailable?: boolean;
+  /** Whether the companion diagrams document is active. */
+  diagramsActive?: boolean;
+  /** Callback when the companion diagrams document is selected. */
+  onSelectDiagrams?: () => void;
   /** Callback when the user selects a solution */
   onSelect: (index: number) => void;
   /** Callback to clear all solutions and return to the drop zone */
@@ -34,6 +40,9 @@ export function SolutionSidebar({
   solutions,
   activeIndex,
   combinedIndex = -1,
+  diagramsAvailable = false,
+  diagramsActive = false,
+  onSelectDiagrams,
   onSelect,
   onReset,
 }: SolutionSidebarProps) {
@@ -103,6 +112,18 @@ export function SolutionSidebar({
             <span className={styles.solIcon} aria-hidden="true">🧩</span>
             <span className={styles.solName}>All Selected Solutions</span>
           </button>
+          {diagramsAvailable && onSelectDiagrams && (
+            <button
+              type="button"
+              className={[styles.item, styles.combinedItem, diagramsActive ? styles.active : ''].filter(Boolean).join(' ')}
+              onClick={onSelectDiagrams}
+              aria-current={diagramsActive ? 'page' : undefined}
+              aria-label="View diagrams for all selected solutions"
+            >
+              <span className={styles.solIcon} aria-hidden="true">📊</span>
+              <span className={styles.solName}>Diagrams</span>
+            </button>
+          )}
         </div>
       )}
 

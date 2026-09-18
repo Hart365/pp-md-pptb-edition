@@ -4,14 +4,20 @@
  */
 
 import type {
+  AgentDefinition,
+  AIModelDefinition,
   AppDefinition,
+  CustomAPIDefinition,
   DashboardDefinition,
+  DataflowDefinition,
+  DesktopFlowDefinition,
   EntityAttribute,
   EntityDefinition,
   EntityRelationship,
   EnvironmentVariableDefinition,
   FieldSecurityProfileDefinition,
   FormDefinition,
+  OfflineProfileDefinition,
   ParsedSolution,
   PluginAssemblyDefinition,
   PluginStepDefinition,
@@ -25,6 +31,8 @@ import type {
   WebResourceDefinition,
   ConnectionReferenceDefinition,
   DataverseCustomApiDefinition,
+  DataverseDependencyEdge,
+  SolutionCollectionPolicy,
 } from '../types/solution';
 import {
   AppType,
@@ -56,6 +64,7 @@ const ENTITY_PROPERTIES = [
   'Description',
   'ObjectTypeCode',
   'IsCustomEntity',
+  'IsIntersect',
   'IsActivity',
   'ChangeTrackingEnabled',
   'OwnershipType',
@@ -128,9 +137,185 @@ function buildInConditions(attribute: string, ids: string[]): string {
   return `<condition attribute="${attribute}" operator="in">${values}</condition>`;
 }
 
+/** Build the FetchXML join used to scope a component record to one solution. */
+function solutionComponentLink(solutionId: string, recordId: string, componentTypes: number[]): string {
+  const typeFilter = componentTypes.map((type) => `<value>${type}</value>`).join('');
+  return `<link-entity name="solutioncomponent" from="objectid" to="${recordId}" link-type="inner">
+    <filter type="and">
+      <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
+      <condition attribute="componenttype" operator="in">${typeFilter}</condition>
+    </filter>
+  </link-entity>`;
+}
+
 async function fetchXmlQuery(fetchXml: string): Promise<Record<string, unknown>[]> {
   const result = await window.dataverseAPI.fetchXmlQuery(fetchXml);
   return result.value;
+}
+
+/** Query a Dataverse entity set with explicit OData selection and filtering. */
+async function queryDataverse(odataQuery: string): Promise<Record<string, unknown>[]> {
+  const result = await window.dataverseAPI.queryData(odataQuery);
+  return result.value;
+}
+
+export function collectDataverseDependencyEdgesFromSolution(
+  solution: Pick<ParsedSolution, 'entities' | 'forms' | 'views' | 'apps' | 'processes' | 'connectionReferences' | 'environmentVariables' | 'pluginAssemblies'>,
+): DataverseDependencyEdge[] {
+  const runtimeEdges: DataverseDependencyEdge[] = [];
+
+  solution.forms.forEach((form) => {
+    if (form.entityLogicalName) {
+      runtimeEdges.push({
+        dependentName: form.displayName || form.name,
+        dependentType: 'Form',
+        requiredName: form.entityLogicalName,
+        requiredType: 'Table',
+      });
+    }
+  });
+
+  solution.views.forEach((view) => {
+    if (view.entityLogicalName) {
+      runtimeEdges.push({
+        dependentName: view.displayName || view.name,
+        dependentType: 'View',
+        requiredName: view.entityLogicalName,
+        requiredType: 'Table',
+      });
+    }
+  });
+
+  solution.apps.forEach((app) => {
+    const appName = app.displayName || app.name;
+    (app.entities ?? []).forEach((entityName) => {
+      runtimeEdges.push({
+        dependentName: appName,
+        dependentType: 'App',
+        requiredName: entityName,
+        requiredType: 'Table',
+      });
+    });
+
+    (app.connectors ?? []).forEach((connectorName) => {
+      runtimeEdges.push({
+        dependentName: appName,
+        dependentType: 'App',
+        requiredName: connectorName,
+        requiredType: 'Connector',
+      });
+    });
+  });
+
+  const connectionRefCandidates = solution.connectionReferences
+    .flatMap((reference) => [reference.name, reference.displayName])
+    .filter((value): value is string => !!value);
+  const envVarCandidates = solution.environmentVariables
+    .flatMap((envVar) => [envVar.schemaName, envVar.displayName])
+    .filter((value): value is string => !!value);
+
+  solution.processes.forEach((process) => {
+    const processName = process.displayName || process.name;
+    const relatedTables = [process.primaryEntity, ...(process.relatedEntities ?? [])].filter((value): value is string => !!value);
+
+    relatedTables.forEach((tableName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: tableName,
+        requiredType: 'Table',
+      });
+    });
+
+    const usedRefs = process.flowConnectionReferences?.length
+      ? process.flowConnectionReferences
+      : [];
+    usedRefs.forEach((referenceName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: referenceName,
+        requiredType: 'Connection Reference',
+      });
+    });
+
+    const usedEnvVars = process.flowEnvironmentVariables?.length
+      ? process.flowEnvironmentVariables
+      : [];
+    usedEnvVars.forEach((envVarName) => {
+      runtimeEdges.push({
+        dependentName: processName,
+        dependentType: 'Process',
+        requiredName: envVarName,
+        requiredType: 'Environment Variable',
+      });
+    });
+
+    if (process.flowDefinition && (process.flowConnectionReferences?.length ?? 0) === 0) {
+      const flowText = JSON.stringify(process.flowDefinition).toLowerCase();
+      connectionRefCandidates.filter((candidate) => flowText.includes(candidate.toLowerCase())).forEach((candidate) => {
+        runtimeEdges.push({
+          dependentName: processName,
+          dependentType: 'Process',
+          requiredName: candidate,
+          requiredType: 'Connection Reference',
+        });
+      });
+
+      envVarCandidates.filter((candidate) => flowText.includes(candidate.toLowerCase())).forEach((candidate) => {
+        runtimeEdges.push({
+          dependentName: processName,
+          dependentType: 'Process',
+          requiredName: candidate,
+          requiredType: 'Environment Variable',
+        });
+      });
+    }
+  });
+
+  solution.pluginAssemblies.forEach((assembly) => {
+    assembly.steps.forEach((step) => {
+      if (!step.primaryEntity) return;
+      runtimeEdges.push({
+        dependentName: `${assembly.assemblyName} :: ${step.name}`,
+        dependentType: 'Plugin Step',
+        requiredName: step.primaryEntity,
+        requiredType: 'Table',
+      });
+    });
+  });
+
+  const solutionTables = new Set(solution.entities.map((entity) => entity.logicalName.toLowerCase()));
+  const scopedEdges = runtimeEdges.filter((edge) => (
+    edge.requiredType !== 'Table' || solutionTables.has(edge.requiredName.toLowerCase())
+  ));
+
+  return Array.from(new Map(
+    scopedEdges.map((edge) => [`${edge.dependentType}|${edge.dependentName}|${edge.requiredType}|${edge.requiredName}`.toLowerCase(), edge]),
+  ).values());
+}
+
+async function queryDataverseWithFallback(
+  candidateQueries: string[],
+  section: string,
+  warnings: string[] = [],
+  warnOnFailure = true,
+): Promise<Record<string, unknown>[]> {
+  const errors: unknown[] = [];
+
+  for (const query of candidateQueries) {
+    try {
+      return await queryDataverse(query);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  if (errors.length > 0 && warnings && warnOnFailure) {
+    warnings.push(warningMessage(section, errors[0]));
+  }
+
+  return [];
 }
 
 function warningMessage(section: string, error: unknown): string {
@@ -145,7 +330,6 @@ function optionLabel(option: Record<string, unknown>): { value: number; label: s
     description: getLabel(option.Description),
   };
 }
-
 function mapAttributeType(type: string): AttributeType {
   const normalized = type.toLowerCase();
   const mapping: Record<string, AttributeType> = {
@@ -288,7 +472,6 @@ async function getSolutionMetadata(solutionId: string): Promise<SolutionMetadata
     isManaged: asBoolean(row.ismanaged),
   };
 }
-
 async function getEntityLogicalNamesForSolution(solutionId: string): Promise<string[]> {
   const componentRows = await fetchXmlQuery(`
     <fetch>
@@ -307,7 +490,7 @@ async function getEntityLogicalNamesForSolution(solutionId: string): Promise<str
 
   const allEntities = await window.dataverseAPI.getAllEntitiesMetadata([...ENTITY_PROPERTIES]);
   return allEntities.value
-    .filter((entity) => ids.has(asString(entity.MetadataId)))
+    .filter((entity) => ids.has(asString(entity.MetadataId)) && !asBoolean(entity.IsIntersect))
     .map((entity) => asString(entity.LogicalName))
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
@@ -328,6 +511,8 @@ async function buildEntityDefinition(logicalName: string): Promise<EntityDefinit
       'IsCustomAttribute',
       'IsPrimaryName',
       'IsAuditEnabled',
+      'IsValidForAdvancedFind',
+      'IsSecured',
     ]),
     window.dataverseAPI.getEntityRelatedMetadata(logicalName, 'OneToManyRelationships', [
       'SchemaName',
@@ -383,6 +568,8 @@ async function buildEntityDefinition(logicalName: string): Promise<EntityDefinit
       isCustom: asBoolean(attribute.IsCustomAttribute, true),
       isPrimaryName: asBoolean(attribute.IsPrimaryName),
       isAuditEnabled: asBoolean(attribute.IsAuditEnabled),
+      isValidForAdvancedFind: asBoolean((attribute.IsValidForAdvancedFind as { Value?: boolean } | undefined)?.Value, true),
+      isSecured: asBoolean(attribute.IsSecured),
     };
   });
 
@@ -451,9 +638,7 @@ async function fetchForms(solutionId: string): Promise<FormDefinition[]> {
         <attribute name="objecttypecode" />
         <attribute name="type" />
         <attribute name="formxml" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-        </filter>
+        ${solutionComponentLink(solutionId, 'formid', [24, 60])}
       </entity>
     </fetch>
   `);
@@ -483,9 +668,7 @@ async function fetchViews(solutionId: string): Promise<ViewDefinition[]> {
         <attribute name="querytype" />
         <attribute name="fetchxml" />
         <attribute name="layoutxml" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-        </filter>
+        ${solutionComponentLink(solutionId, 'savedqueryid', [26])}
       </entity>
     </fetch>
   `);
@@ -596,7 +779,7 @@ async function fetchSolutionAppComponentIds(solutionId: string, warnings: string
           <filter type="and">
             <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
             <condition attribute="componenttype" operator="in">
-              <value>60</value>
+              <value>80</value>
               <value>300</value>
             </condition>
           </filter>
@@ -612,7 +795,7 @@ async function fetchSolutionAppComponentIds(solutionId: string, warnings: string
       const componentType = asNumber(row.componenttype, -1);
       if (!objectId) return;
 
-      if (componentType === 60) {
+      if (componentType === 80) {
         modelDrivenIds.add(objectId);
       } else if (componentType === 300) {
         canvasIds.add(objectId);
@@ -633,7 +816,7 @@ async function fetchSolutionAppComponentIds(solutionId: string, warnings: string
 }
 
 async function fetchProcesses(solutionId: string): Promise<ProcessDefinition[]> {
-  const rows = await fetchXmlQuery(`
+  const componentRows = await fetchXmlQuery(`
     <fetch>
       <entity name="workflow">
         <attribute name="workflowid" />
@@ -648,18 +831,41 @@ async function fetchProcesses(solutionId: string): Promise<ProcessDefinition[]> 
         <attribute name="triggeroncreate" />
         <attribute name="triggerondelete" />
         <attribute name="triggeronupdateattributelist" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-        </filter>
+        <attribute name="clientdata" />
+        ${solutionComponentLink(solutionId, 'workflowid', [29])}
       </entity>
     </fetch>
   `);
+  // Legacy actions can be solution-owned records without a workflow component.
+  const solutionRows = await fetchXmlQuery(`
+    <fetch>
+      <entity name="workflow">
+        <attribute name="workflowid" /><attribute name="name" /><attribute name="description" />
+        <attribute name="uniquename" /><attribute name="category" /><attribute name="primaryentity" />
+        <attribute name="statecode" /><attribute name="scope" /><attribute name="ondemand" />
+        <attribute name="triggeroncreate" /><attribute name="triggerondelete" />
+        <attribute name="triggeronupdateattributelist" /><attribute name="clientdata" />
+        <filter><condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" /></filter>
+      </entity>
+    </fetch>
+  `);
+  const rows = Array.from(new Map(
+    [...componentRows, ...solutionRows].map((row) => [asString(row.workflowid) || asString(row.uniquename), row]),
+  ).values());
 
   return rows.map((row): ProcessDefinition => {
     const triggerAttributes = asString(row.triggeronupdateattributelist)
       .split(',')
       .map((item) => item.trim())
       .filter(Boolean);
+
+    const clientData = asString(row.clientdata);
+    let flowDefinition: object | undefined;
+    try {
+      flowDefinition = clientData ? JSON.parse(clientData) as object : undefined;
+    } catch {
+      // Client data is optional and varies by workflow category.
+    }
 
     return {
       name: asString(row.name),
@@ -674,6 +880,7 @@ async function fetchProcesses(solutionId: string): Promise<ProcessDefinition[]> 
       triggerAttributes: triggerAttributes.length > 0 ? triggerAttributes : undefined,
       steps: buildWorkflowSteps(row),
       scope: asString(row.scope) || undefined,
+      flowDefinition,
     };
   });
 }
@@ -719,7 +926,7 @@ async function fetchApps(solutionId: string, warnings: string[]): Promise<AppDef
 
   try {
     const modelDrivenFilter = componentIds.modelDrivenIds.length > 0
-      ? buildInConditions('appmoduleid', componentIds.modelDrivenIds)
+      ? buildInConditions('appmoduleidunique', componentIds.modelDrivenIds)
       : `<condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />`;
 
     const modelDrivenRows = await fetchXmlQuery(`
@@ -748,11 +955,11 @@ async function fetchApps(solutionId: string, warnings: string[]): Promise<AppDef
         const appComponentRows = await fetchXmlQuery(`
           <fetch>
             <entity name="appmodulecomponent">
-              <attribute name="appmoduleid" />
+              <attribute name="appmoduleidunique" />
               <attribute name="componenttype" />
               <attribute name="objectid" />
               <filter type="and">
-                ${buildInConditions('appmoduleid', appModuleIds)}
+                ${buildInConditions('appmoduleidunique', appModuleIds)}
                 <condition attribute="componenttype" operator="eq" value="1" />
               </filter>
             </entity>
@@ -770,7 +977,7 @@ async function fetchApps(solutionId: string, warnings: string[]): Promise<AppDef
           );
 
           appComponentRows.forEach((row) => {
-            const appModuleId = asString(row.appmoduleid);
+            const appModuleId = asString(row.appmoduleidunique);
             const logicalName = metadataIdToLogicalName.get(asString(row.objectid));
             if (!appModuleId || !logicalName) return;
 
@@ -780,8 +987,9 @@ async function fetchApps(solutionId: string, warnings: string[]): Promise<AppDef
             appEntityMap.get(appModuleId)!.add(logicalName);
           });
         }
-      } catch (error) {
-        warnings.push(warningMessage('Model-driven app table references could not be read', error));
+      } catch {
+        // Some Dataverse hosts do not expose the app-component intersection.
+        // Preserve the app inventory without emitting a non-actionable warning.
       }
     }
 
@@ -864,9 +1072,7 @@ async function fetchWebResources(solutionId: string): Promise<WebResourceDefinit
         <attribute name="displayname" />
         <attribute name="description" />
         <attribute name="webresourcetype" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-        </filter>
+        ${solutionComponentLink(solutionId, 'webresourceid', [61])}
       </entity>
     </fetch>
   `);
@@ -887,9 +1093,7 @@ async function fetchSecurityRoles(solutionId: string, warnings: string[]): Promi
         <entity name="role">
           <attribute name="roleid" />
           <attribute name="name" />
-          <filter>
-            <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-          </filter>
+          ${solutionComponentLink(solutionId, 'roleid', [20])}
         </entity>
       </fetch>
     `);
@@ -906,18 +1110,10 @@ async function fetchSecurityRoles(solutionId: string, warnings: string[]): Promi
     }
 
     try {
-      const rolePrivilegeRows = await fetchXmlQuery(`
-        <fetch>
-          <entity name="roleprivileges">
-            <attribute name="roleid" />
-            <attribute name="privilegeid" />
-            <attribute name="privilegedepthmask" />
-            <filter>
-              ${buildInConditions('roleid', roleIds)}
-            </filter>
-          </entity>
-        </fetch>
-      `);
+      const roleFilters = roleIds.map((roleId) => `roleid eq ${roleId}`).join(' or ');
+      const rolePrivilegeRows = await queryDataverse(
+        `roleprivilegescollection?$select=roleid,privilegeid,privilegedepthmask&$filter=${encodeURIComponent(roleFilters)}`,
+      );
 
       const privilegeIds = Array.from(new Set(
         rolePrivilegeRows.map((row) => asString(row.privilegeid)).filter(Boolean),
@@ -925,17 +1121,10 @@ async function fetchSecurityRoles(solutionId: string, warnings: string[]): Promi
 
       let privilegeNameById = new Map<string, string>();
       if (privilegeIds.length > 0) {
-        const privilegeRows = await fetchXmlQuery(`
-          <fetch>
-            <entity name="privilege">
-              <attribute name="privilegeid" />
-              <attribute name="name" />
-              <filter>
-                ${buildInConditions('privilegeid', privilegeIds)}
-              </filter>
-            </entity>
-          </fetch>
-        `);
+        const privilegeFilters = privilegeIds.map((privilegeId) => `privilegeid eq ${privilegeId}`).join(' or ');
+        const privilegeRows = await queryDataverse(
+          `privileges?$select=privilegeid,name&$filter=${encodeURIComponent(privilegeFilters)}`,
+        );
 
         privilegeNameById = new Map(
           privilegeRows.map((row) => [asString(row.privilegeid), asString(row.name)]),
@@ -969,8 +1158,9 @@ async function fetchSecurityRoles(solutionId: string, warnings: string[]): Promi
           privileges: privilegesByRoleId.get(roleId) ?? [],
         };
       });
-    } catch (error) {
-      warnings.push(warningMessage('Security role privileges could not be read', error));
+    } catch {
+      // Role privilege intersections are not exposed as FetchXML entities by
+      // every host. Keep the role inventory when detailed privileges cannot load.
       return roles;
     }
   } catch (error) {
@@ -986,9 +1176,7 @@ async function fetchFieldSecurityProfiles(solutionId: string, warnings: string[]
         <entity name="fieldsecurityprofile">
           <attribute name="name" />
           <attribute name="description" />
-          <filter>
-            <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-          </filter>
+          ${solutionComponentLink(solutionId, 'fieldsecurityprofileid', [70])}
         </entity>
       </fetch>
     `);
@@ -1006,20 +1194,36 @@ async function fetchFieldSecurityProfiles(solutionId: string, warnings: string[]
 }
 
 async function fetchConnectionReferences(solutionId: string): Promise<ConnectionReferenceDefinition[]> {
-  const rows = await fetchXmlQuery(`
-    <fetch>
-      <entity name="connectionreference">
-        <attribute name="connectionreferenceid" />
-        <attribute name="connectionreferencelogicalname" />
-        <attribute name="connectionreferencedisplayname" />
-        <attribute name="connectionid" />
-        <attribute name="connectorid" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-        </filter>
-      </entity>
-    </fetch>
-  `);
+  const columns = 'connectionreferenceid,connectionreferencelogicalname,connectionreferencedisplayname,connectionid,connectorid';
+  const solutionRows = await queryDataverse(
+    `connectionreferences?$select=${columns}&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+  ).catch(() => fetchXmlQuery(`
+      <fetch><entity name="connectionreference">
+        <attribute name="connectionreferenceid" /><attribute name="connectionreferencelogicalname" />
+        <attribute name="connectionreferencedisplayname" /><attribute name="connectionid" /><attribute name="connectorid" />
+        <filter><condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" /></filter>
+      </entity></fetch>
+    `));
+  let componentRows: Record<string, unknown>[] = [];
+  try {
+    componentRows = await fetchXmlQuery(`
+      <fetch>
+        <entity name="connectionreference">
+          <attribute name="connectionreferenceid" />
+          <attribute name="connectionreferencelogicalname" />
+          <attribute name="connectionreferencedisplayname" />
+          <attribute name="connectionid" />
+          <attribute name="connectorid" />
+          ${solutionComponentLink(solutionId, 'connectionreferenceid', [371, 372])}
+        </entity>
+      </fetch>
+    `);
+  } catch {
+    // The solution-owned query is the documented fallback for this component.
+  }
+  const rows = Array.from(new Map(
+    [...solutionRows, ...componentRows].map((row) => [asString(row.connectionreferenceid), row]),
+  ).values());
 
   return rows.map((row): ConnectionReferenceDefinition => ({
     name: firstNonEmptyString(row, ['connectionreferencedisplayname', 'connectionreferencelogicalname']) || asString(row.connectionreferenceid),
@@ -1029,22 +1233,26 @@ async function fetchConnectionReferences(solutionId: string): Promise<Connection
   }));
 }
 
-async function fetchEnvironmentVariables(solutionId: string, warnings: string[]): Promise<EnvironmentVariableDefinition[]> {
-  const definitions = await fetchXmlQuery(`
-    <fetch>
-      <entity name="environmentvariabledefinition">
-        <attribute name="environmentvariabledefinitionid" />
-        <attribute name="displayname" />
-        <attribute name="description" />
-        <attribute name="schemaname" />
-        <attribute name="type" />
-        <attribute name="defaultvalue" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-        </filter>
-      </entity>
-    </fetch>
-  `);
+export async function fetchEnvironmentVariables(solutionId: string, warnings: string[]): Promise<EnvironmentVariableDefinition[]> {
+  let definitions: Record<string, unknown>[];
+  try {
+    definitions = await fetchXmlQuery(`
+      <fetch>
+        <entity name="environmentvariabledefinition">
+          <attribute name="environmentvariabledefinitionid" />
+          <attribute name="displayname" />
+          <attribute name="description" />
+          <attribute name="schemaname" />
+          <attribute name="type" />
+          <attribute name="defaultvalue" />
+          ${solutionComponentLink(solutionId, 'environmentvariabledefinitionid', [380])}
+        </entity>
+      </fetch>
+    `);
+  } catch (error) {
+    warnings.push(warningMessage('Environment variable definitions could not be read', error));
+    return [];
+  }
 
   const definitionIds = definitions.map((row) => asString(row.environmentvariabledefinitionid)).filter(Boolean);
   let valuesByDefinitionId = new Map<string, string>();
@@ -1054,7 +1262,7 @@ async function fetchEnvironmentVariables(solutionId: string, warnings: string[])
       const valueRows = await fetchXmlQuery(`
         <fetch>
           <entity name="environmentvariablevalue">
-            <attribute name="value" />
+            <attribute name="environmentvariablevalueid" />
             <attribute name="environmentvariabledefinitionid" />
             <filter type="and">
               ${buildInConditions('environmentvariabledefinitionid', definitionIds)}
@@ -1063,7 +1271,7 @@ async function fetchEnvironmentVariables(solutionId: string, warnings: string[])
         </fetch>
       `);
       valuesByDefinitionId = new Map(
-        valueRows.map((row) => [asString(row.environmentvariabledefinitionid), asString(row.value)]),
+        valueRows.map((row) => [asString(row.environmentvariabledefinitionid), '__PRESENT__']),
       );
     } catch (error) {
       warnings.push(warningMessage('Environment variable current values could not be read', error));
@@ -1080,7 +1288,8 @@ async function fetchEnvironmentVariables(solutionId: string, warnings: string[])
       type: asString(row.type) || 'String',
       defaultValue: asString(row.defaultvalue) || undefined,
       hasCurrentValue: typeof currentValue === 'string' && currentValue.length > 0,
-      currentValue,
+      // Connected documentation reports presence only; never render a live value.
+      currentValue: undefined,
       schemaName: asString(row.schemaname),
     };
   });
@@ -1094,9 +1303,7 @@ async function fetchReports(solutionId: string, warnings: string[]): Promise<Rep
           <attribute name="name" />
           <attribute name="filename" />
           <attribute name="description" />
-          <filter>
-            <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-          </filter>
+          ${solutionComponentLink(solutionId, 'reportid', [31])}
         </entity>
       </fetch>
     `);
@@ -1122,8 +1329,8 @@ async function fetchDashboards(solutionId: string, warnings: string[]): Promise<
           <attribute name="description" />
           <attribute name="objecttypecode" />
           <attribute name="type" />
+          ${solutionComponentLink(solutionId, 'formid', [60])}
           <filter>
-            <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
             <condition attribute="type" operator="in">
               <value>0</value>
               <value>1</value>
@@ -1159,9 +1366,7 @@ async function fetchPluginAssemblies(solutionId: string, warnings: string[]): Pr
           <attribute name="publickeytoken" />
           <attribute name="isolationmode" />
           <attribute name="sourcetype" />
-          <filter>
-            <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-          </filter>
+          ${solutionComponentLink(solutionId, 'pluginassemblyid', [91])}
         </entity>
       </fetch>
     `);
@@ -1281,12 +1486,95 @@ export function isCustomSolutionCandidate(solution: DataverseSolutionSummary): b
     && !name.includes('system');
 }
 
+export async function fetchModernDataverseArtifacts(
+  solutionId: string,
+  warnings: string[] = [],
+): Promise<{
+  agents: AgentDefinition[];
+  aiModels: AIModelDefinition[];
+  desktopFlows: DesktopFlowDefinition[];
+  dataflows: DataflowDefinition[];
+  customApis: CustomAPIDefinition[];
+  offlineProfiles: OfflineProfileDefinition[];
+}> {
+  const [agents, aiModels, desktopFlows, dataflows, customApiRows, offlineProfiles] = await Promise.all([
+    queryDataverseWithFallback([
+      `botcomponents?$select=botcomponentid,name,description,botcomponenttype,language&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+      `botcomponents?$select=botcomponentid,name,description,language&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+    ], 'Copilot Studio agents could not be read', warnings, false).then((rows) => rows.map((row) => ({
+      name: asString(row.name) || asString(row.displayname) || asString(row.botcomponentid),
+      displayName: asString(row.displayname) || asString(row.name) || asString(row.botcomponentid),
+      description: asString(row.description) || undefined,
+      sourcePath: asString(row.botcomponentid) || 'botcomponent',
+      agentType: asString(row.botcomponenttype) || undefined,
+      language: asString(row.language) || undefined,
+    } satisfies AgentDefinition))),
+    queryDataverseWithFallback([
+      `aimodels?$select=aimodelid,name,description,provider,version&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+      `aimodeldefinitions?$select=aimodeldefinitionid,name,description,provider,version&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+    ], 'AI model artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+      name: asString(row.name) || asString(row.displayname) || asString(row.aimodelid),
+      displayName: asString(row.displayname) || asString(row.name) || asString(row.aimodelid),
+      description: asString(row.description) || undefined,
+      sourcePath: asString(row.aimodelid) || asString(row.aimodeldefinitionid) || 'aimodel',
+      provider: asString(row.provider) || undefined,
+      version: asString(row.version) || undefined,
+    } satisfies AIModelDefinition))),
+    queryDataverseWithFallback([
+      `desktopflows?$select=desktopflowid,name,description,isenabled,stepcount&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+      `uiflows?$select=uiflowid,name,description,isenabled,stepcount&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+    ], 'Desktop flow artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+      name: asString(row.name) || asString(row.displayname) || asString(row.desktopflowid) || asString(row.uiflowid),
+      displayName: asString(row.displayname) || asString(row.name) || asString(row.desktopflowid) || asString(row.uiflowid),
+      description: asString(row.description) || undefined,
+      sourcePath: asString(row.desktopflowid) || asString(row.uiflowid) || 'desktopflow',
+      isEnabled: asBoolean(row.isenabled),
+      stepCount: asNumber(row.stepcount),
+    } satisfies DesktopFlowDefinition))),
+    queryDataverseWithFallback([
+      `dataflows?$select=dataflowid,name,description,refreshmode&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+      `dataflowdefinitions?$select=dataflowdefinitionid,name,description,refreshmode&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+    ], 'Dataflow artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+      name: asString(row.name) || asString(row.displayname) || asString(row.dataflowid) || asString(row.dataflowdefinitionid),
+      displayName: asString(row.displayname) || asString(row.name) || asString(row.dataflowid) || asString(row.dataflowdefinitionid),
+      description: asString(row.description) || undefined,
+      sourcePath: asString(row.dataflowid) || asString(row.dataflowdefinitionid) || 'dataflow',
+      refreshMode: asString(row.refreshmode) || undefined,
+    } satisfies DataflowDefinition))),
+    fetchCustomApis(solutionId, warnings).then((rows) => rows.map((row) => ({
+      name: row.name,
+      displayName: row.displayName,
+      description: row.description,
+      sourcePath: row.uniqueName || row.name,
+      boundEntityLogicalName: undefined,
+      isFunction: row.isFunction,
+    } satisfies CustomAPIDefinition))),
+    queryDataverseWithFallback([
+      `mobileofflineprofiles?$select=mobileofflineprofileid,name,description,profiletype&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+      `offlineprofiles?$select=offlineprofileid,name,description,profiletype&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
+    ], 'Offline profile artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+      name: asString(row.name) || asString(row.displayname) || asString(row.mobileofflineprofileid) || asString(row.offlineprofileid),
+      displayName: asString(row.displayname) || asString(row.name) || asString(row.mobileofflineprofileid) || asString(row.offlineprofileid),
+      description: asString(row.description) || undefined,
+      sourcePath: asString(row.mobileofflineprofileid) || asString(row.offlineprofileid) || 'offlineprofile',
+      profileType: asString(row.profiletype) || undefined,
+    } satisfies OfflineProfileDefinition))),
+  ]);
+
+  return { agents, aiModels, desktopFlows, dataflows, customApis: customApiRows, offlineProfiles };
+}
+
 export async function buildParsedSolutionFromDataverse(
   solutionId: string,
   onProgress?: (update: DataverseProgressUpdate) => void,
+  collectionPolicy: SolutionCollectionPolicy = 'solutionOnly',
 ): Promise<ParsedSolution> {
   const warnings: string[] = [];
   const update = (message: string, percent: number) => onProgress?.({ message, percent });
+
+  // Collection policy is informational, not a parse issue — it is carried on
+  // `collectionPolicy` and rendered as a header note by the Markdown generator
+  // instead of being pushed into `warnings` (which renders under "Parse Warnings").
 
   update('Reading solution metadata...', 5);
   const metadata = await getSolutionMetadata(solutionId);
@@ -1306,7 +1594,7 @@ export async function buildParsedSolutionFromDataverse(
   }
 
   update('Reading solution components...', 45);
-  const [forms, views, processes, customApis, apps, webResources, securityRoles, fieldSecurityProfiles, connectionReferences, environmentVariables, reports, dashboards, pluginAssemblies] = await Promise.all([
+  const [forms, views, processes, customApis, apps, webResources, securityRoles, fieldSecurityProfiles, connectionReferences, environmentVariables, reports, dashboards, pluginAssemblies, modernArtifacts] = await Promise.all([
     fetchForms(solutionId).catch((error) => {
       warnings.push(warningMessage('Forms could not be read', error));
       return [];
@@ -1335,12 +1623,36 @@ export async function buildParsedSolutionFromDataverse(
     fetchReports(solutionId, warnings),
     fetchDashboards(solutionId, warnings),
     fetchPluginAssemblies(solutionId, warnings),
+    fetchModernDataverseArtifacts(solutionId, warnings),
   ]);
+
+  // Prevent platform entities, such as systemuser, from expanding into the
+  // environment-wide graph when they are included as relationship context.
+  const selectedEntityNames = new Set(entities.map((entity) => entity.logicalName.toLowerCase()));
+  const scopedEntities = entities.map((entity) => ({
+    ...entity,
+    attributes: entity.isCustom ? entity.attributes : [],
+    relationships: entity.relationships.filter((relationship) =>
+      selectedEntityNames.has(relationship.referencedEntity.toLowerCase())
+      && selectedEntityNames.has(relationship.referencingEntity.toLowerCase())),
+  }));
+
+  const dataverseDependencies = collectDataverseDependencyEdgesFromSolution({
+    entities: scopedEntities,
+    forms,
+    views,
+    apps,
+    processes,
+    connectionReferences,
+    environmentVariables,
+    pluginAssemblies,
+  });
 
   update('Preparing markdown source model...', 95);
   return {
+    collectionPolicy,
     metadata,
-    entities,
+    entities: scopedEntities,
     optionSets: [],
     forms,
     views,
@@ -1355,132 +1667,16 @@ export async function buildParsedSolutionFromDataverse(
     reports,
     dashboards,
     pluginAssemblies,
-    dataverseInsights: {
+    agents: modernArtifacts.agents,
+    aiModels: modernArtifacts.aiModels,
+    desktopFlows: modernArtifacts.desktopFlows,
+    dataflows: modernArtifacts.dataflows,
+    customApis: modernArtifacts.customApis,
+    offlineProfiles: modernArtifacts.offlineProfiles,
+    dataverseInsights: customApis.length > 0 || dataverseDependencies.length > 0 ? {
       customApis,
-      dependencies: [],
-    },
+      dependencies: dataverseDependencies,
+    } : undefined,
     warnings,
   };
-}
-
-function collectReferencedEntityLogicalNames(solution: ParsedSolution): Set<string> {
-  const names = new Set<string>();
-
-  solution.entities.forEach((entity) => {
-    if (entity.logicalName) names.add(entity.logicalName.toLowerCase());
-    entity.relationships.forEach((relationship) => {
-      if (relationship.referencedEntity) names.add(relationship.referencedEntity.toLowerCase());
-      if (relationship.referencingEntity) names.add(relationship.referencingEntity.toLowerCase());
-    });
-    entity.attributes.forEach((attribute) => {
-      if (attribute.lookupTarget) names.add(attribute.lookupTarget.toLowerCase());
-    });
-  });
-
-  solution.forms.forEach((form) => {
-    if (form.entityLogicalName) names.add(form.entityLogicalName.toLowerCase());
-  });
-
-  solution.views.forEach((view) => {
-    if (view.entityLogicalName) names.add(view.entityLogicalName.toLowerCase());
-  });
-
-  solution.processes.forEach((process) => {
-    if (process.primaryEntity) names.add(process.primaryEntity.toLowerCase());
-    (process.relatedEntities ?? []).forEach((entityName) => {
-      if (entityName) names.add(entityName.toLowerCase());
-    });
-  });
-
-  solution.apps.forEach((app) => {
-    (app.entities ?? []).forEach((entityName) => {
-      if (entityName) names.add(entityName.toLowerCase());
-    });
-  });
-
-  solution.reports.forEach((report) => {
-    (report.relatedEntities ?? []).forEach((entityName) => {
-      if (entityName) names.add(entityName.toLowerCase());
-    });
-  });
-
-  solution.dashboards.forEach((dashboard) => {
-    if (dashboard.entityLogicalName) names.add(dashboard.entityLogicalName.toLowerCase());
-  });
-
-  return names;
-}
-
-function mapDataverseEntityMetadataRowToEntity(row: Record<string, unknown>): EntityDefinition {
-  const logicalName = asString(row.LogicalName);
-  return {
-    name: logicalName,
-    logicalName,
-    displayName: getLabel(row.DisplayName, logicalName),
-    description: getLabel(row.Description),
-    objectTypeCode: row.ObjectTypeCode !== undefined ? asNumber(row.ObjectTypeCode) : undefined,
-    isCustom: asBoolean(row.IsCustomEntity, true),
-    isActivity: asBoolean(row.IsActivity),
-    changeTracking: asBoolean(row.ChangeTrackingEnabled),
-    attributes: [],
-    relationships: [],
-    ownershipType: asString(row.OwnershipType) as EntityDefinition['ownershipType'],
-    entitySetName: asString(row.EntitySetName) || undefined,
-    primaryAttributeName: asString(row.PrimaryNameAttribute) || undefined,
-  };
-}
-
-export async function enrichSolutionsWithDataverseMetadata(
-  solutions: ParsedSolution[],
-  onProgress?: (update: DataverseProgressUpdate) => void,
-): Promise<ParsedSolution[]> {
-  if (solutions.length === 0) return solutions;
-
-  onProgress?.({ message: 'Reading Dataverse metadata for cross-solution gap filling...', percent: 10 });
-
-  const metadataResponse = await window.dataverseAPI.getAllEntitiesMetadata([...ENTITY_PROPERTIES]);
-  const metadataByLogicalName = new Map<string, Record<string, unknown>>(
-    metadataResponse.value
-      .map((row) => row as Record<string, unknown>)
-      .map((row) => [asString(row.LogicalName).toLowerCase(), row]),
-  );
-
-  onProgress?.({ message: 'Applying Dataverse metadata gap filling...', percent: 60 });
-
-  const enriched = solutions.map((solution) => {
-    const referencedEntityNames = collectReferencedEntityLogicalNames(solution);
-    const existingEntityMap = new Map(solution.entities.map((entity) => [entity.logicalName.toLowerCase(), entity]));
-
-    const enrichedEntities = solution.entities.map((entity) => {
-      const metadata = metadataByLogicalName.get(entity.logicalName.toLowerCase());
-      if (!metadata) return entity;
-
-      const metadataEntity = mapDataverseEntityMetadataRowToEntity(metadata);
-      return {
-        ...entity,
-        displayName: entity.displayName || metadataEntity.displayName,
-        description: entity.description || metadataEntity.description,
-        objectTypeCode: entity.objectTypeCode ?? metadataEntity.objectTypeCode,
-        ownershipType: entity.ownershipType || metadataEntity.ownershipType,
-        entitySetName: entity.entitySetName || metadataEntity.entitySetName,
-        primaryAttributeName: entity.primaryAttributeName || metadataEntity.primaryAttributeName,
-      };
-    });
-
-    const appendedEntities: EntityDefinition[] = [];
-    referencedEntityNames.forEach((logicalNameLower) => {
-      if (existingEntityMap.has(logicalNameLower)) return;
-      const metadata = metadataByLogicalName.get(logicalNameLower);
-      if (!metadata) return;
-      appendedEntities.push({ ...mapDataverseEntityMetadataRowToEntity(metadata), enrichedFromDataverse: true });
-    });
-
-    return {
-      ...solution,
-      entities: [...enrichedEntities, ...appendedEntities],
-    };
-  });
-
-  onProgress?.({ message: 'Dataverse metadata gap filling completed.', percent: 100 });
-  return enriched;
 }

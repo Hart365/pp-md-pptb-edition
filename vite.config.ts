@@ -16,8 +16,9 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       // Keep production bundles compact; source maps stay available in non-prod builds.
       sourcemap: enableSourceMaps,
-      // Mermaid and diagram libraries are large; allow bigger bundles.
-      chunkSizeWarningLimit: 2000,
+      // PPTB serves the declared entry asset only. Keep Mermaid's dynamic
+      // import graph in that asset so the sandbox can render diagrams.
+      chunkSizeWarningLimit: 4500,
       // Emit stable, human-readable output file names for packaging.
       cssCodeSplit: false,
       rollupOptions: {
@@ -42,7 +43,7 @@ export default defineConfig(({ mode }) => {
           },
         },
       },
-      // Vite 8 uses Rolldown; disable code splitting to avoid chunk-* outputs.
+      // Inline dynamic imports because PPTB does not resolve emitted chunks.
       rolldownOptions: {
         output: {
           codeSplitting: false,

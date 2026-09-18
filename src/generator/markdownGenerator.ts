@@ -28,6 +28,13 @@ import type {
   OptionSetDefinition,
   DataverseCustomApiDefinition,
   DataverseDependencyEdge,
+  AgentDefinition,
+  AIModelDefinition,
+  DesktopFlowDefinition,
+  DataflowDefinition,
+  CustomAPIDefinition,
+  OfflineProfileDefinition,
+  SolutionCollectionPolicy,
 } from '../types/solution';
 
 import { ProcessCategory, WebResourceType, AttributeType, AppType } from '../types/solution';
@@ -38,7 +45,72 @@ export interface MarkdownGenerationOptions {
   enrichmentIndicators?: EnrichmentIndicators;
   includeDiagrams?: boolean;
   includeDefaultColumns?: boolean;
+  scope?: Partial<DocumentationScope>;
+  documentationSettings?: Partial<DocumentationSettings>;
 }
+
+export type AttributeSelectionMode = 'all' | 'custom-only' | 'attributes-on-form' | 'attributes-not-on-form' | 'option-set-focused' | 'unmanaged-only';
+
+export interface DocumentationMetadataSettings {
+  includeDefaultColumns: boolean;
+  excludeVirtualAttributes: boolean;
+  attributeSelectionMode: AttributeSelectionMode;
+  manualAttributes: string[];
+  includeTypeColumn: boolean;
+  includeRequiredLevelInfo: boolean;
+  includeCustomColumn: boolean;
+  includeAuditInfo: boolean;
+  includeNotesColumn: boolean;
+  includeDescriptionColumn: boolean;
+  includeAdvancedFind: boolean;
+  includeFieldSecurity: boolean;
+  includeMetadataSource: boolean;
+}
+
+export interface DocumentationSecurityRoleFilters {
+  onlyTablesInCurrentSolution: boolean;
+  onlyCustomTables: boolean;
+}
+
+export interface DocumentationSettings {
+  metadata: DocumentationMetadataSettings;
+  securityRoleFilters: DocumentationSecurityRoleFilters;
+  separateDiagramsDocument: boolean;
+  /** Mermaid built-in theme applied to generated diagrams (a colour scheme, not a document theme). */
+  diagramColourTheme: MermaidColourTheme;
+}
+
+export type MermaidColourTheme = 'neutral' | 'default' | 'dark' | 'forest' | 'base';
+
+export const DEFAULT_DOCUMENTATION_SETTINGS: DocumentationSettings = {
+  metadata: { includeDefaultColumns: true, excludeVirtualAttributes: false, attributeSelectionMode: 'all', manualAttributes: [], includeTypeColumn: true, includeRequiredLevelInfo: true, includeCustomColumn: true, includeAuditInfo: true, includeNotesColumn: true, includeDescriptionColumn: true, includeAdvancedFind: false, includeFieldSecurity: false, includeMetadataSource: false },
+  securityRoleFilters: { onlyTablesInCurrentSolution: false, onlyCustomTables: false },
+  separateDiagramsDocument: false,
+  diagramColourTheme: 'neutral',
+};
+
+/** Controls optional documentation sections without changing collection scope. */
+export interface DocumentationScope {
+  flows: boolean;
+  apps: boolean;
+  security: boolean;
+  integration: boolean;
+  plugins: boolean;
+  reports: boolean;
+  webResources: boolean;
+  modernArtifacts: boolean;
+}
+
+export const DEFAULT_DOCUMENTATION_SCOPE: DocumentationScope = {
+  flows: true,
+  apps: true,
+  security: true,
+  integration: true,
+  plugins: true,
+  reports: true,
+  webResources: true,
+  modernArtifacts: true,
+};
 
 export interface EnrichmentIndicators {
   peerGapFillApplied?: boolean;
@@ -184,11 +256,24 @@ function appTypeLabel(appType: AppType): string {
 }
 
 function includeDefaultColumns(options: MarkdownGenerationOptions): boolean {
-  return options.includeDefaultColumns !== false;
+  return options.documentationSettings?.metadata?.includeDefaultColumns ?? options.includeDefaultColumns !== false;
+}
+
+function documentationSettings(options: MarkdownGenerationOptions): DocumentationSettings {
+  return {
+    ...DEFAULT_DOCUMENTATION_SETTINGS,
+    ...options.documentationSettings,
+    metadata: { ...DEFAULT_DOCUMENTATION_SETTINGS.metadata, ...options.documentationSettings?.metadata },
+    securityRoleFilters: { ...DEFAULT_DOCUMENTATION_SETTINGS.securityRoleFilters, ...options.documentationSettings?.securityRoleFilters },
+  };
 }
 
 function includeDiagrams(options: MarkdownGenerationOptions): boolean {
   return options.includeDiagrams !== false;
+}
+
+function includeScope(options: MarkdownGenerationOptions, section: keyof DocumentationScope): boolean {
+  return options.scope?.[section] ?? DEFAULT_DOCUMENTATION_SCOPE[section];
 }
 
 function isSharePointConnectorName(name: string | undefined | null): boolean {
@@ -271,21 +356,20 @@ function resolveAttributeDisplayName(attributeName: string, attributeDisplayMap:
 
 function accessDepthBadge(depth: number): string {
   const normalized = Math.max(0, Math.min(4, depth));
-  const stylesByDepth: Record<number, { label: string; background: string }> = {
-    0: { label: 'None', background: '#fee2e2' },
-    1: { label: 'User', background: '#fef9c3' },
-    2: { label: 'Business Unit', background: '#dbeafe' },
-    3: { label: 'Parent Child Business Unit', background: '#ede9fe' },
-    4: { label: 'Org', background: '#dcfce7' },
+  const labelsByDepth: Record<number, string> = {
+    0: 'None',
+    1: 'User',
+    2: 'Business Unit',
+    3: 'Parent Child Business Unit',
+    4: 'Org',
   };
-  const value = stylesByDepth[normalized] ?? { label: String(normalized), background: '#e5e7eb' };
-  return `<span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:0.4rem;background:${value.background};color:#1f2937;font-weight:600;">${htmlEscape(value.label)}</span>`;
+  const label = labelsByDepth[normalized] ?? String(normalized);
+  return `<span class="ppmd-privilege ppmd-privilege-${normalized}">${htmlEscape(label)}</span>`;
 }
 
 function allowedBadge(allowed: boolean): string {
   const label = allowed ? 'Allowed' : 'Not Allowed';
-  const background = allowed ? '#dcfce7' : '#fee2e2';
-  return `<span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:0.4rem;background:${background};color:#1f2937;font-weight:600;">${label}</span>`;
+  return `<span class="ppmd-privilege ppmd-permission-${allowed ? 'allowed' : 'denied'}">${label}</span>`;
 }
 
 function processTitle(proc: ProcessDefinition): string {
@@ -508,6 +592,12 @@ export function consolidateSolutions(solutions: ParsedSolution[]): ParsedSolutio
   const reports = mergeByKey(items.flatMap((solution) => solution.reports), (report) => `${report.fileName || ''}|${report.name}`.toLowerCase(), (current, incoming) => ({ ...current, displayName: current.displayName || incoming.displayName, relatedEntities: uniqueStrings([...(current.relatedEntities ?? []), ...(incoming.relatedEntities ?? [])]), category: current.category || incoming.category }));
   const dashboards = mergeByKey(items.flatMap((solution) => solution.dashboards), (dashboard) => (dashboard.name || dashboard.displayName || '').toLowerCase(), (current, incoming) => ({ ...current, displayName: current.displayName || incoming.displayName, entityLogicalName: current.entityLogicalName || incoming.entityLogicalName, dashboardType: current.dashboardType || incoming.dashboardType, components: uniqueStrings([...(current.components ?? []), ...(incoming.components ?? [])]) }));
   const pluginAssemblies = mergeByKey(items.flatMap((solution) => solution.pluginAssemblies), (assembly) => assembly.assemblyName.toLowerCase(), (current, incoming) => ({ ...current, displayName: current.displayName || incoming.displayName, version: current.version || incoming.version, culture: current.culture || incoming.culture, publicKeyToken: current.publicKeyToken || incoming.publicKeyToken, sourceType: current.sourceType || incoming.sourceType, steps: mergeByKey([...current.steps, ...incoming.steps], (step) => `${step.name}|${step.message}|${step.primaryEntity || ''}|${step.stage}|${step.mode}|${step.pluginTypeName}`.toLowerCase(), (first) => first) }));
+  const agents = mergeByKey(items.flatMap((solution) => solution.agents), (agent) => agent.name.toLowerCase(), (first) => first);
+  const aiModels = mergeByKey(items.flatMap((solution) => solution.aiModels), (model) => model.name.toLowerCase(), (first) => first);
+  const desktopFlows = mergeByKey(items.flatMap((solution) => solution.desktopFlows), (flow) => flow.name.toLowerCase(), (first) => first);
+  const dataflows = mergeByKey(items.flatMap((solution) => solution.dataflows), (flow) => flow.name.toLowerCase(), (first) => first);
+  const customApis = mergeByKey(items.flatMap((solution) => solution.customApis), (api) => api.name.toLowerCase(), (first) => first);
+  const offlineProfiles = mergeByKey(items.flatMap((solution) => solution.offlineProfiles), (profile) => profile.name.toLowerCase(), (first) => first);
   const dataverseCustomApis = mergeByKey(
     items.flatMap((solution) => solution.dataverseInsights?.customApis ?? []),
     (api) => (api.uniqueName || api.name).toLowerCase(),
@@ -542,6 +632,12 @@ export function consolidateSolutions(solutions: ParsedSolution[]): ParsedSolutio
     reports,
     dashboards,
     pluginAssemblies,
+    agents,
+    aiModels,
+    desktopFlows,
+    dataflows,
+    customApis,
+    offlineProfiles,
     dataverseInsights: (dataverseCustomApis.length > 0 || dataverseDependencies.length > 0)
       ? {
         customApis: dataverseCustomApis,
@@ -760,6 +856,27 @@ function generateEnrichmentLegend(indicators?: EnrichmentIndicators): string[] {
   return [];
 }
 
+/** Explains a non-default Dataverse collection policy as a header note (informational, not a parse issue). */
+function generateCollectionPolicyLine(collectionPolicy?: SolutionCollectionPolicy): string {
+  if (collectionPolicy === 'solutionAndDirectReferences') {
+    return '> 🔗 **Collection Policy:** Solution + Direct References _(direct-reference enrichment remains bounded to discovered relationship endpoints within the selected solution context)_';
+  }
+  if (collectionPolicy === 'environmentAppendix') {
+    return '> 🗂️ **Collection Policy:** Environment Appendix _(this documentation stays solution-scoped; environment data is annotated separately rather than merged into the solution inventory)_';
+  }
+  return '';
+}
+
+/** Describes where a table's metadata originated, for the optional "Metadata Source" property row. */
+function entitySourceLabel(options: MarkdownGenerationOptions): string {
+  const indicators = options.enrichmentIndicators;
+  if (!indicators) return 'ZIP Export';
+  const sources: string[] = ['ZIP Export'];
+  if (indicators.peerGapFillApplied) sources.push('Peer Gap Fill');
+  if (indicators.dataverseMetadataEnriched) sources.push('Dataverse Enrichment');
+  return sources.join(' + ');
+}
+
 function generateHeader(
   solution: ParsedSolution,
   documentContext?: DocumentContext,
@@ -785,6 +902,12 @@ function generateHeader(
     lines.push('');
     lines.push(enrichmentLine);
     lines.push(...generateEnrichmentLegend(indicators));
+  }
+
+  const collectionPolicyLine = generateCollectionPolicyLine(solution.collectionPolicy);
+  if (collectionPolicyLine) {
+    lines.push('');
+    lines.push(collectionPolicyLine);
   }
 
   lines.push(
@@ -819,7 +942,10 @@ function generateHeader(
 function generateTableOfContents(solution: ParsedSolution, options: MarkdownGenerationOptions): string {
   const lines: string[] = [heading(2, 'Table of Contents'), ''];
   const documentedApps = solution.apps.filter(isDocumentedApp);
-  const dataverseInsightsCount = solution.dataverseInsights ? 1 : 0;
+  const dataverseInsightsCount = solution.dataverseInsights
+    && (solution.dataverseInsights.customApis.length > 0 || solution.dataverseInsights.dependencies.length > 0)
+    ? 1
+    : 0;
   const sharePointConnectionRefs = solution.connectionReferences.filter(
     (reference) => isSharePointConnectorName(reference.connectorDisplayName) || isSharePointConnectorName(reference.connectorId),
   );
@@ -832,17 +958,23 @@ function generateTableOfContents(solution: ParsedSolution, options: MarkdownGene
     { label: 'Tables & Columns',               count: solution.entities.length },
     { label: 'Global Option Sets',             count: solution.optionSets.length },
     { label: 'Forms & Views',                  count: solution.forms.length + solution.views.length },
-    { label: 'Processes & Automation',         count: solution.processes.length },
-    { label: 'Power Apps',                     count: documentedApps.length },
-    { label: 'Web Resources',                  count: solution.webResources.length },
-    { label: 'Security Roles',                 count: solution.securityRoles.length },
-    { label: 'Column Level Security Profiles', count: solution.fieldSecurityProfiles.length },
-    { label: 'Connection References',          count: solution.connectionReferences.length },
-    { label: 'Environment Variables',          count: solution.environmentVariables.length },
-    { label: 'Email Templates',                count: solution.emailTemplates.length },
-    { label: 'SharePoint Data Sources',        count: sharePointSectionCount },
-    { label: 'Reports & Dashboards',           count: solution.reports.length + solution.dashboards.length },
-    { label: 'Plugin Assemblies & Steps',      count: solution.pluginAssemblies.length },
+    { label: 'Processes & Automation',         count: includeScope(options, 'flows') ? solution.processes.length : 0 },
+    { label: 'Power Apps',                     count: includeScope(options, 'apps') ? documentedApps.length : 0 },
+    { label: 'Copilot Studio Agents',          count: includeScope(options, 'modernArtifacts') ? solution.agents.length : 0 },
+    { label: 'AI Models',                      count: includeScope(options, 'modernArtifacts') ? solution.aiModels.length : 0 },
+    { label: 'Desktop Flows',                  count: includeScope(options, 'modernArtifacts') ? solution.desktopFlows.length : 0 },
+    { label: 'Dataflows',                      count: includeScope(options, 'modernArtifacts') ? solution.dataflows.length : 0 },
+    { label: 'Custom APIs',                    count: includeScope(options, 'modernArtifacts') ? solution.customApis.length : 0 },
+    { label: 'Offline Profiles',               count: includeScope(options, 'modernArtifacts') ? solution.offlineProfiles.length : 0 },
+    { label: 'Web Resources',                  count: includeScope(options, 'webResources') ? solution.webResources.length : 0 },
+    { label: 'Security Roles',                 count: includeScope(options, 'security') ? solution.securityRoles.length : 0 },
+    { label: 'Column Level Security Profiles', count: includeScope(options, 'security') ? solution.fieldSecurityProfiles.length : 0 },
+    { label: 'Connection References',          count: includeScope(options, 'integration') ? solution.connectionReferences.length : 0 },
+    { label: 'Environment Variables',          count: includeScope(options, 'integration') ? solution.environmentVariables.length : 0 },
+    { label: 'Email Templates',                count: includeScope(options, 'integration') ? solution.emailTemplates.length : 0 },
+    { label: 'SharePoint Data Sources',        count: includeScope(options, 'integration') ? sharePointSectionCount : 0 },
+    { label: 'Reports & Dashboards',           count: includeScope(options, 'reports') ? solution.reports.length + solution.dashboards.length : 0 },
+    { label: 'Plugin Assemblies & Steps',      count: includeScope(options, 'plugins') ? solution.pluginAssemblies.length : 0 },
     { label: 'Dataverse Deep Insights',        count: dataverseInsightsCount },
   ];
 
@@ -1086,15 +1218,31 @@ function generateEntitiesSection(
   optionSets: OptionSetDefinition[],
   entityMap: Map<string, string>,
   options: MarkdownGenerationOptions,
+  forms: ParsedSolution['forms'],
 ): string {
   if (entities.length === 0) return '';
 
   const lines: string[] = [heading(2, 'Tables & Columns'), ''];
+  const settings = documentationSettings(options);
+  const attributesOnForms = new Set(forms.flatMap((form) => form.fields.map((field) => field.attributeName.toLowerCase())));
 
   sortByLabel(entities, (entity) => labelWithSchema(entity.displayName || entity.logicalName, entity.logicalName)).forEach((entity) => {
-    const documentedAttributes = includeDefaultColumns(options)
+    let documentedAttributes = includeDefaultColumns(options)
       ? entity.attributes
       : entity.attributes.filter((attr) => attr.isCustom);
+    if (settings.metadata.excludeVirtualAttributes) documentedAttributes = documentedAttributes.filter((attr) => attr.type !== AttributeType.Virtual);
+    if (settings.metadata.manualAttributes.length > 0) {
+      const selected = new Set(settings.metadata.manualAttributes.map((name) => name.toLowerCase()));
+      documentedAttributes = documentedAttributes.filter((attr) => selected.has(attr.name.toLowerCase()));
+    } else if (settings.metadata.attributeSelectionMode === 'custom-only' || settings.metadata.attributeSelectionMode === 'unmanaged-only') {
+      documentedAttributes = documentedAttributes.filter((attr) => attr.isCustom);
+    } else if (settings.metadata.attributeSelectionMode === 'option-set-focused') {
+      documentedAttributes = documentedAttributes.filter((attr) => attr.type === AttributeType.OptionSet || attr.type === AttributeType.MultiSelectOptionSet);
+    } else if (settings.metadata.attributeSelectionMode === 'attributes-on-form') {
+      documentedAttributes = documentedAttributes.filter((attr) => attributesOnForms.has(attr.name.toLowerCase()));
+    } else if (settings.metadata.attributeSelectionMode === 'attributes-not-on-form') {
+      documentedAttributes = documentedAttributes.filter((attr) => !attributesOnForms.has(attr.name.toLowerCase()));
+    }
     const entityDisplayName = entity.displayName || entity.logicalName;
     lines.push(heading(3, `${entityDisplayName} (${entity.logicalName})`));
     lines.push('');
@@ -1117,6 +1265,9 @@ function generateEntitiesSection(
     if (entity.isActivity) lines.push(`| **Activity** | Yes |`);
     if (entity.changeTracking) lines.push(`| **Change Tracking** | Enabled |`);
     if (entity.description) lines.push(`| **Description** | ${mdEscape(entity.description)} |`);
+    if (settings.metadata.includeMetadataSource) {
+      lines.push(`| **Metadata Source** | ${entitySourceLabel(options)} |`);
+    }
     lines.push('');
 
     // Columns
@@ -1127,20 +1278,17 @@ function generateEntitiesSection(
       // Determine which optional columns to show
       const hasDescriptions = documentedAttributes.some((a) => !!a.description);
       const hasAuditInfo = documentedAttributes.some((a) => a.isAuditEnabled !== undefined);
+      const showAdvancedFind = settings.metadata.includeAdvancedFind && documentedAttributes.some((a) => a.isValidForAdvancedFind !== undefined);
+      const showFieldSecurity = settings.metadata.includeFieldSecurity && documentedAttributes.some((a) => a.isSecured !== undefined);
 
-      if (hasDescriptions && hasAuditInfo) {
-        lines.push('| Display Name | Schema Name | Type | Required | Custom | Audited | Notes | Description |');
-        lines.push('|--------------|-------------|------|----------|--------|---------|-------|-------------|');
-      } else if (hasDescriptions) {
-        lines.push('| Display Name | Schema Name | Type | Required | Custom | Notes | Description |');
-        lines.push('|--------------|-------------|------|----------|--------|-------|-------------|');
-      } else if (hasAuditInfo) {
-        lines.push('| Display Name | Schema Name | Type | Required | Custom | Audited | Notes |');
-        lines.push('|--------------|-------------|------|----------|--------|---------|-------|');
-      } else {
-        lines.push('| Display Name | Schema Name | Type | Required | Custom | Notes |');
-        lines.push('|--------------|-------------|------|----------|--------|-------|');
-      }
+      const headerCells = ['Display Name', 'Schema Name', 'Type', 'Required', 'Custom'];
+      if (hasAuditInfo) headerCells.push('Audited');
+      if (showAdvancedFind) headerCells.push('Advanced Find');
+      if (showFieldSecurity) headerCells.push('Field Security');
+      headerCells.push('Notes');
+      if (hasDescriptions) headerCells.push('Description');
+      lines.push(`| ${headerCells.join(' | ')} |`);
+      lines.push(`|${headerCells.map(() => '---').join('|')}|`);
 
       sortByLabel(documentedAttributes, (attr) => labelWithSchema(attr.displayName || attr.name, attr.name)).forEach((attr) => {
         const notes: string[] = [];
@@ -1150,23 +1298,20 @@ function generateEntitiesSection(
         if (attr.maxLength)     notes.push(`Max: ${attr.maxLength}`);
         if (attr.precision)     notes.push(`Precision: ${attr.precision}`);
 
-        let row = `| ${mdEscape(attr.displayName || attr.name)} ` +
-          `| \`${mdEscape(attr.name)}\` ` +
-          `| ${attr.type} ` +
-          `| ${attr.required ? '✅ Yes' : 'No'} ` +
-          `| ${attr.isCustom ? '✳️ Yes' : 'No'} `;
+        const rowCells = [
+          mdEscape(attr.displayName || attr.name),
+          `\`${mdEscape(attr.name)}\``,
+          attr.type,
+          attr.required ? '✅ Yes' : 'No',
+          attr.isCustom ? '✳️ Yes' : 'No',
+        ];
+        if (hasAuditInfo) rowCells.push(attr.isAuditEnabled ? '🔍 Yes' : 'No');
+        if (showAdvancedFind) rowCells.push(attr.isValidForAdvancedFind ? '🔎 Yes' : 'No');
+        if (showFieldSecurity) rowCells.push(attr.isSecured ? '🔒 Yes' : 'No');
+        rowCells.push(mdEscape(notes.join(', ')));
+        if (hasDescriptions) rowCells.push(mdEscape(attr.description ?? ''));
 
-        if (hasAuditInfo) {
-          row += `| ${attr.isAuditEnabled ? '🔍 Yes' : 'No'} `;
-        }
-
-        row += `| ${mdEscape(notes.join(', '))} |`;
-
-        if (hasDescriptions) {
-          row += ` ${mdEscape(attr.description)} |`;
-        }
-
-        lines.push(row);
+        lines.push(`| ${rowCells.join(' | ')} |`);
       });
       lines.push('');
     } else if (!includeDefaultColumns(options) && entity.attributes.length > 0) {
@@ -1218,7 +1363,7 @@ function generateEntitiesSection(
         if (!attr.options) return;
         lines.push(`**${attr.displayName || attr.name} (\`${attr.name}\`)**:`);
         lines.push('');
-        lines.push('| Label | Value | Color | Description |');
+        lines.push('| Label | Value | Colour | Description |');
         lines.push('|-------|-------|-------|-------------|');
         sortByLabel(attr.options, (opt) => opt.label || String(opt.value)).forEach((opt) => {
           lines.push(`| ${mdEscape(opt.label)} | ${opt.value} | ${mdEscape(opt.color)} | ${mdEscape(opt.description)} |`);
@@ -1238,7 +1383,7 @@ function generateEntitiesSection(
         sortByLabel(globalDefs, (os) => labelWithSchema(os.displayName || os.name, os.name)).forEach((os) => {
           lines.push(`**${os.displayName || os.name} (\`${os.name}\`)**:`);
           lines.push('');
-          lines.push('| Label | Value | Color | Description |');
+          lines.push('| Label | Value | Colour | Description |');
           lines.push('|-------|-------|-------|-------------|');
           sortByLabel(os.options, (opt) => opt.label || String(opt.value)).forEach((opt) => {
             lines.push(`| ${mdEscape(opt.label)} | ${opt.value} | ${mdEscape(opt.color)} | ${mdEscape(opt.description)} |`);
@@ -1276,7 +1421,7 @@ function generateOptionSetsSection(optionSets: OptionSetDefinition[]): string {
       lines.push(`> ${os.description}`);
       lines.push('');
     }
-    lines.push('| Label | Value | Color | Description |');
+    lines.push('| Label | Value | Colour | Description |');
     lines.push('|-------|-------|-------|-------------|');
     sortByLabel(os.options, (opt) => opt.label || String(opt.value)).forEach((opt) => {
       lines.push(`| ${mdEscape(opt.label || String(opt.value))} | ${opt.value} | ${mdEscape(opt.color)} | ${mdEscape(opt.description)} |`);
@@ -1534,6 +1679,43 @@ function generateAppsSection(apps: AppDefinition[], entityMap: Map<string, strin
   return lines.join('\n');
 }
 
+/** Render archive-safe inventories for modern Power Platform artifacts. */
+function generateModernArtifactSections(solution: ParsedSolution): string[] {
+  const simpleTable = <T extends { name: string; displayName?: string; sourcePath: string }>(
+    title: string,
+    items: T[],
+    headers: string,
+    row: (item: T) => string,
+  ): string => {
+    if (items.length === 0) return '';
+    const lines = [heading(2, title), '', headers];
+    sortByLabel(items, (item) => item.displayName || item.name).forEach((item) => lines.push(row(item)));
+    lines.push('');
+    return lines.join('\n');
+  };
+
+  return [
+    simpleTable<AgentDefinition>('Copilot Studio Agents', solution.agents,
+      '| Agent | Type | Language | Trigger/Channel | Connectors | Source |\n|-------|------|----------|-----------------|------------|--------|',
+      (agent) => `| ${mdEscape(agent.displayName || agent.name)} | ${mdEscape(agent.agentType) || '–'} | ${mdEscape(agent.language) || '–'} | ${mdEscape(agent.trigger) || '–'} | ${sortByLabel(agent.connectors ?? [], (value) => value).map(mdEscape).join(', ') || '–'} | \`${mdEscape(agent.sourcePath)}\` |`),
+    simpleTable<AIModelDefinition>('AI Models', solution.aiModels,
+      '| Model | Type | Provider | Version | Deployment | Source |\n|-------|------|----------|---------|------------|--------|',
+      (model) => `| ${mdEscape(model.displayName || model.name)} | ${mdEscape(model.modelType) || '–'} | ${mdEscape(model.provider) || '–'} | ${mdEscape(model.version) || '–'} | ${mdEscape(model.endpoint) || '–'} | \`${mdEscape(model.sourcePath)}\` |`),
+    simpleTable<DesktopFlowDefinition>('Desktop Flows', solution.desktopFlows,
+      '| Desktop Flow | Folder | Status | Steps | Connectors | Source |\n|--------------|--------|--------|-------|------------|--------|',
+      (flow) => `| ${mdEscape(flow.displayName || flow.name)} | ${mdEscape(flow.folder) || '–'} | ${flow.isEnabled === undefined ? 'Unknown' : flow.isEnabled ? 'Enabled' : 'Disabled'} | ${flow.stepCount ?? '–'} | ${sortByLabel(flow.connectors ?? [], (value) => value).map(mdEscape).join(', ') || '–'} | \`${mdEscape(flow.sourcePath)}\` |`),
+    simpleTable<DataflowDefinition>('Dataflows', solution.dataflows,
+      '| Dataflow | Refresh | Connectors | Source |\n|----------|---------|------------|--------|',
+      (flow) => `| ${mdEscape(flow.displayName || flow.name)} | ${mdEscape(flow.refreshMode) || '–'} | ${sortByLabel(flow.connectors ?? [], (value) => value).map(mdEscape).join(', ') || '–'} | \`${mdEscape(flow.sourcePath)}\` |`),
+    simpleTable<CustomAPIDefinition>('Custom APIs', solution.customApis,
+      '| Custom API | Bound Table | Function | Source |\n|------------|-------------|----------|--------|',
+      (api) => `| ${mdEscape(api.displayName || api.name)} | ${mdEscape(api.boundEntityLogicalName) || '–'} | ${api.isFunction === undefined ? 'Unknown' : api.isFunction ? 'Yes' : 'No'} | \`${mdEscape(api.sourcePath)}\` |`),
+    simpleTable<OfflineProfileDefinition>('Offline Profiles', solution.offlineProfiles,
+      '| Profile | Type | Tables | Source |\n|---------|------|--------|--------|',
+      (profile) => `| ${mdEscape(profile.displayName || profile.name)} | ${mdEscape(profile.profileType) || '–'} | ${sortByLabel(profile.entities ?? [], (value) => value).map((value) => `\`${mdEscape(value)}\``).join(', ') || '–'} | \`${mdEscape(profile.sourcePath)}\` |`),
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Web Resources
 // ---------------------------------------------------------------------------
@@ -1622,6 +1804,7 @@ function generateSecuritySection(
   profiles: FieldSecurityProfileDefinition[],
   entityMap: Map<string, string>,
   attributeDisplayMap: Map<string, string>,
+  options: MarkdownGenerationOptions,
 ): string {
   if (roles.length === 0 && profiles.length === 0) return '';
 
@@ -1673,7 +1856,12 @@ function generateSecuritySection(
           lines.push('| Table | Logical Name | Create | Read | Write | Delete | Append | Append To | Assign | Share | Unshare |');
           lines.push('|-------|--------------|--------|------|-------|--------|--------|-----------|--------|-------|---------|');
 
-          sortByLabel(Array.from(matrix.entries()), ([table]) => table).forEach(([table, ops]) => {
+          const solutionTables = new Set(Array.from(entityMap.keys()));
+          const filteredMatrix = Array.from(matrix.entries()).filter(([table]) => {
+            if (documentationSettings(options).securityRoleFilters.onlyTablesInCurrentSolution && !solutionTables.has(table.toLowerCase())) return false;
+            return !documentationSettings(options).securityRoleFilters.onlyCustomTables || entityMap.has(table.toLowerCase());
+          });
+          sortByLabel(filteredMatrix, ([table]) => table).forEach(([table, ops]) => {
             const tableDisplayName = entityMap.get(table.toLowerCase()) || humanizeEntityName(table);
             lines.push(
               `| ${mdEscape(tableDisplayName)} ` +
@@ -1795,8 +1983,8 @@ function generateIntegrationSection(
         `| ${mdEscape(ev.displayName || ev.schemaName)} ` +
         `| \`${mdEscape(ev.schemaName)}\` ` +
         `| ${ev.type} ` +
-        `| ${ev.hasCurrentValue ? '✅' : '⚠️ Not set'} ` +
-        `| ${ev.hasCurrentValue ? mdEscape(ev.currentValue) || 'Set' : '–'} ` +
+        `| ${ev.hasCurrentValue ? '✅ Set' : '⚠️ Not set'} ` +
+        `| ${ev.hasCurrentValue ? 'Value is not rendered' : '–'} ` +
         `| ${mdEscape(ev.defaultValue) || '–'} |`,
       );
     });
@@ -2385,17 +2573,18 @@ export function generateMarkdown(
     generateHeader(solution, options.documentContext, options.enrichmentIndicators),
     generateTableOfContents(solution, options),
     generateERD(solution.entities, options),
-    generateEntitiesSection(solution.entities, solution.optionSets, entityMap, options),
+    generateEntitiesSection(solution.entities, solution.optionSets, entityMap, options, solution.forms),
     generateOptionSetsSection(solution.optionSets),
     generateFormsViewsSection(solution, entityMap),
-    generateProcessesSection(solution.processes, entityMap, solution.connectionReferences, solution.environmentVariables),
-    generateAppsSection(solution.apps, entityMap),
-    generateWebResourcesSection(solution.webResources),
-    generateSecuritySection(solution.securityRoles, solution.fieldSecurityProfiles, entityMap, attributeDisplayMap),
-    generateIntegrationSection(solution.connectionReferences, solution.environmentVariables, solution.emailTemplates),
-    generateSharePointDataSourcesSection(solution),
-    generateReportsSection(solution.reports, solution.dashboards),
-    generatePluginsSection(solution.pluginAssemblies),
+    includeScope(options, 'flows') ? generateProcessesSection(solution.processes, entityMap, solution.connectionReferences, solution.environmentVariables) : '',
+    includeScope(options, 'apps') ? generateAppsSection(solution.apps, entityMap) : '',
+    ...(includeScope(options, 'modernArtifacts') ? generateModernArtifactSections(solution) : []),
+    includeScope(options, 'webResources') ? generateWebResourcesSection(solution.webResources) : '',
+    includeScope(options, 'security') ? generateSecuritySection(solution.securityRoles, solution.fieldSecurityProfiles, entityMap, attributeDisplayMap, options) : '',
+    includeScope(options, 'integration') ? generateIntegrationSection(solution.connectionReferences, solution.environmentVariables, solution.emailTemplates) : '',
+    includeScope(options, 'integration') ? generateSharePointDataSourcesSection(solution) : '',
+    includeScope(options, 'reports') ? generateReportsSection(solution.reports, solution.dashboards) : '',
+    includeScope(options, 'plugins') ? generatePluginsSection(solution.pluginAssemblies) : '',
     generateDataverseInsightsSection(solution, entityMap),
     generateWarningsSection(solution.warnings),
   ];
@@ -2403,6 +2592,109 @@ export function generateMarkdown(
   // Filter out empty sections and join
   return appendBackToTopLinks(sections.filter((s) => s.trim().length > 0).join('\n'));
 }
+
+// ---------------------------------------------------------------------------
+// Category-grouped export (splits an already-generated document into logical files)
+// ---------------------------------------------------------------------------
+
+export interface MarkdownCategoryFile {
+  /** Stable, filename-safe category key, e.g. 'tables-and-relationships' */
+  key: string;
+  /** Human-readable category title */
+  title: string;
+  /** Self-contained Markdown for this category, including a shared solution header */
+  markdown: string;
+}
+
+/** Logical groupings of generated H2 sections used by the "export by category" feature. */
+const CATEGORY_DEFINITIONS: Array<{ key: string; title: string; headings: string[] }> = [
+  { key: 'tables-and-relationships', title: 'Tables & Relationships', headings: ['Entity Relationship Diagram', 'Tables & Columns', 'Global Option Sets', 'Forms & Views'] },
+  { key: 'apps-and-agents', title: 'Apps & Agents', headings: ['Power Apps', 'Copilot Studio Agents', 'AI Models'] },
+  { key: 'automation-and-processes', title: 'Automation & Processes', headings: ['Processes & Automation', 'Desktop Flows', 'Dataflows', 'Custom APIs', 'Offline Profiles'] },
+  { key: 'plugins', title: 'Plugins & Plugin Steps', headings: ['Plugin Assemblies & Steps'] },
+  { key: 'security-and-integration', title: 'Security & Integration', headings: ['Security Roles', 'Column Level Security Profiles', 'Connection References', 'Connections', 'Environment Variables', 'Email Templates', 'SharePoint Data Sources'] },
+  { key: 'reports-and-insights', title: 'Web Resources, Reports & Insights', headings: ['Web Resources', 'Reports & Dashboards', 'Dataverse Deep Insights', '⚠️ Parse Warnings'] },
+];
+
+/**
+ * Splits a fully generated Markdown document into a set of self-contained,
+ * logically-grouped files (e.g. Tables & Relationships, Apps, Automation &
+ * Processes, Plugins). Each file repeats the solution header/overview so it
+ * can be read independently of the others.
+ */
+export function splitMarkdownByCategory(markdown: string): MarkdownCategoryFile[] {
+  const sectionRegex = /^## (.+)$/gm;
+  const matches = [...markdown.matchAll(sectionRegex)];
+  if (matches.length === 0) return [];
+
+  const preamble = markdown.slice(0, matches[0].index).trimEnd();
+
+  const sections = matches.map((match, idx) => {
+    const start = match.index ?? 0;
+    const end = idx + 1 < matches.length ? (matches[idx + 1].index ?? markdown.length) : markdown.length;
+    return { heading: match[1].trim(), body: markdown.slice(start, end).trimEnd() };
+  });
+
+  const overview = sections.find((s) => s.heading === 'Solution Overview');
+  const sharedHeader = [preamble, overview?.body ?? ''].filter(Boolean).join('\n\n');
+
+  const usedHeadings = new Set(CATEGORY_DEFINITIONS.flatMap((c) => c.headings));
+  usedHeadings.add('Solution Overview');
+  usedHeadings.add('Table of Contents');
+
+  const files: MarkdownCategoryFile[] = [];
+  CATEGORY_DEFINITIONS.forEach((category) => {
+    const matched = sections.filter((s) => category.headings.includes(s.heading));
+    if (matched.length === 0) return;
+    files.push({
+      key: category.key,
+      title: category.title,
+      markdown: appendBackToTopLinks([sharedHeader, ...matched.map((s) => s.body)].join('\n\n')),
+    });
+  });
+
+  const leftover = sections.filter((s) => !usedHeadings.has(s.heading));
+  if (leftover.length > 0) {
+    files.push({
+      key: 'other',
+      title: 'Other',
+      markdown: appendBackToTopLinks([sharedHeader, ...leftover.map((s) => s.body)].join('\n\n')),
+    });
+  }
+
+  return files;
+}
+
+/**
+ * Builds a standalone document containing only Mermaid diagram sections from
+ * an already-generated Markdown document.
+ */
+export function extractDiagramsDocument(markdown: string, title = 'Diagrams'): string {
+  const sectionRegex = /^## (.+)$/gm;
+  const matches = [...markdown.matchAll(sectionRegex)];
+  const preamble = markdown.slice(0, matches[0]?.index ?? markdown.length).trim();
+  const sections = matches.map((match, index) => {
+    const start = match.index ?? 0;
+    const end = index + 1 < matches.length ? (matches[index + 1].index ?? markdown.length) : markdown.length;
+    return markdown.slice(start, end).trim();
+  }).filter((section) => section.includes('```mermaid'));
+
+  if (sections.length === 0) return '';
+
+  const header = [
+    preamble.replace(/^# .+$/m, `# ${title}`),
+    '',
+    heading(2, 'Table of Contents'),
+    '',
+    ...sections.map((section) => {
+      const sectionTitle = section.match(/^## (.+)$/m)?.[1] ?? 'Diagram';
+      return `- [${sectionTitle}](${headingAnchor(sectionTitle)})`;
+    }),
+  ].join('\n');
+
+  return appendBackToTopLinks(`${header}\n\n${sections.join('\n\n')}`);
+}
+
 
 /**
  * Generates a consolidated markdown summary across multiple parsed solutions
@@ -2440,6 +2732,15 @@ export function generateConsolidatedMarkdown(
     lines.push('');
     lines.push(enrichmentLine);
     lines.push(...generateEnrichmentLegend(options.enrichmentIndicators));
+  }
+
+  const sharedCollectionPolicy = items.every((item) => item.collectionPolicy === items[0].collectionPolicy)
+    ? items[0].collectionPolicy
+    : undefined;
+  const collectionPolicyLine = generateCollectionPolicyLine(sharedCollectionPolicy);
+  if (collectionPolicyLine) {
+    lines.push('');
+    lines.push(collectionPolicyLine);
   }
 
   lines.push(
@@ -2562,7 +2863,20 @@ export function generateConsolidatedMarkdown(
   });
   lines.push('');
 
-  return appendBackToTopLinks(lines.join('\n'));
+  const body = lines.join('\n');
+  const tocHeadings = [...body.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
+  const toc = [
+    heading(2, 'Table of Contents'),
+    '',
+    ...tocHeadings.map((sectionTitle) => `- [${sectionTitle}](${headingAnchor(sectionTitle)})`),
+    '',
+  ].join('\n');
+  const firstSectionIndex = body.search(/^## /m);
+  const withToc = firstSectionIndex >= 0
+    ? `${body.slice(0, firstSectionIndex)}${toc}${body.slice(firstSectionIndex)}`
+    : `${body}\n\n${toc}`;
+
+  return appendBackToTopLinks(withToc);
 }
 
 /**
