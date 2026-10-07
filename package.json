@@ -1,6 +1,6 @@
 {
   "name": "@hart365/pp-md-pptb-edition",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "displayName": "PP-MD Power Platform Markdown Document Generator",
   "description": "Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection",
   "author": "Mike Hartley",
@@ -42,7 +42,7 @@
     "build": "tsc && vite build && node scripts/normalize-dist-assets.mjs",
     "build:with-maps": "tsc && vite build --mode debug && node scripts/normalize-dist-assets.mjs",
     "preview": "vite preview",
-    "validate": "pptb-validate",
+    "validate": "node node_modules/@pptb/validate/dist/cli.js",
     "validate:offline": "node scripts/validate-offline.cjs",
     "validate:dist": "node scripts/validate-dist.cjs",
     "validate:publish": "npm run validate:offline && npm run build && npm run validate:dist && npm pack --dry-run",
@@ -85,6 +85,9 @@
     "typescript-eslint": "^8.69.0",
     "vite": "^8.2.2",
     "vitest": "^5.0.0"
+  },
+  "overrides": {
+    "katex": "0.18.2"
   },
   "repository": {
     "type": "git",
