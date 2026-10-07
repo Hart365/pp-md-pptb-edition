@@ -52,7 +52,31 @@ function sanitizePdfText(text: string): string {
 }
 
 function stripTags(html: string): string {
-  return html.replace(/<[^>]+>/g, '');
+  let text = '';
+  let tagStart = -1;
+  let quote = '';
+
+  for (let index = 0; index < html.length; index += 1) {
+    const character = html[index];
+    if (tagStart < 0) {
+      if (character === '<') {
+        tagStart = index;
+      } else {
+        text += character;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (character === quote) quote = '';
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '>') {
+      tagStart = -1;
+    }
+  }
+
+  return tagStart < 0 ? text : text + html.slice(tagStart);
 }
 
 interface Style {

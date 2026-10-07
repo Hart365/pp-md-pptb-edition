@@ -51,6 +51,7 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 - Never query or render credentials, secure plug-in configuration, or live environment-variable values.
 - Report only whether an environment-variable current-value record exists.
 - Sanitise rendered Markdown and restrict generated HTML classes before display or HTML export.
+- Strip raw HTML tags from PDF table-cell text, including tags with quoted `>` characters in attributes.
 - Limit Dataverse Deep Insights and dependency output to meaningful references within the selected solution inventory.
 
 ## Power Platform ToolBox Manifest Alignment
@@ -59,14 +60,15 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 
 | Manifest Field | Value |
 | --- | --- |
-| name | @powerplatform/pp-md-tool |
+| name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.1.0 |
-| description | Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection |
-| icon | pp-md.svg |
-| configurations.repository | https://github.com/Hart365/pp-md-pptb-edition/ |
-| configurations.readmeUrl | https://raw.githubusercontent.com/Hart365/pp-md-pptb-edition/main/README.md |
-| configurations.website | https://github.com/Hart365/pp-md-pptb-edition/ |
+| version | 1.1.2 |
+| description | Generate structured Markdown documentation from Solution ZIP files or a direct Dataverse connection |
+| icon | icons/pp-md.svg |
+| configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |
+| configurations.readmeUrl | https://raw.githubusercontent.com/Hart365/pp-md-pptb-edition/refs/heads/main/README.md |
+| configurations.website | https://github.com/Hart365/pp-md-pptb-edition |
+| features.connectionRequirement | optional |
 | license | MIT |
 
 ## User Guide
@@ -101,7 +103,7 @@ The viewer supports rendered Markdown, raw Markdown, in-document search, copy, i
 
 ## Accessibility
 
-The interface is designed against WCAG 2.2 AA:
+This tool has been designed to meet WCAG 2.2 AA compliance where possbile. This includes:
 
 - Semantic landmarks, headings, lists, tables, labels, grouped controls, and status regions.
 - Keyboard-operable native controls for file selection, filtering, toggles, disclosure menus, search, export, and navigation.
@@ -114,7 +116,9 @@ The interface is designed against WCAG 2.2 AA:
 - Reduced-motion behavior, stable target sizes, responsive reflow, non-overlapping toolbar groups, and narrow-screen navigation.
 - Search and viewer state exposed through native roles, names, values, and pressed or busy states.
 
-The standard validation pipeline checks structure, theme-token contrast, TypeScript, lint, unit behavior, offline package requirements, and the production build. Screen-reader combinations, forced colours, 400% zoom, and final PPTB iframe behavior still require a host-browser verification pass; automated checks alone are not claimed as complete WCAG conformance.
+The standard validation pipeline checks structure, theme-token contrast, TypeScript, lint, unit behavior, offline package requirements, and the production build. Testing for Screen-reader combinations, forced colours, 400% zoom, and final PPTB iframe behavior requires manual testing, which has been carried out to best-endeavours.
+
+The author does not claim complete WCAG conformance and individual testing should be performed. If accessibility issues are discovered then please log these as issues in GitHub for review and resolution where possible.
 
 ## Architecture At A Glance
 
@@ -174,7 +178,22 @@ Commands:
 - Build: npm.cmd run build
 - Full pipeline: npm.cmd run test
 - Contrast audit: npm.cmd run test:contrast
-- PPTB validate (offline URL checks): npm.cmd run validate:offline
+- Official PPTB validation with URL checks: npm.cmd run validate
+- Deterministic PPTB validation without URL checks: npm.cmd run validate:offline
+- Validate built entry point and icon: npm.cmd run validate:dist
+- Complete publishing preflight: npm.cmd run finalize-package
+
+### PPTB publishing preflight
+
+1. Run `npm.cmd ci` and `npm.cmd run finalize-package`.
+2. Run `npm.cmd run validate` with network access and resolve every validator error or warning.
+3. Load the built tool through Power Platform ToolBox **Debug > Load Local Tool** and test both launch modes and exports.
+4. Authenticate with npm using `npm login`, then confirm the account can publish the `@hart365` scope.
+5. Publish the scoped package with `npm publish --access public`.
+6. Install `@hart365/pp-md-pptb-edition` through PPTB **Debug > Install from npm** and complete a published-package smoke test.
+7. Submit the npm package through the Power Platform ToolBox tool-submission form.
+
+The package intentionally declares `api.github.com` as an optional CSP connection used only for update checks. Core documentation generation remains available when that endpoint is unavailable.
 
 ## Security And Privacy
 

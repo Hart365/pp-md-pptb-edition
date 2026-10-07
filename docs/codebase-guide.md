@@ -117,6 +117,8 @@ npm.cmd test
 
 The full pipeline runs offline package validation, ESLint, TypeScript, Vitest, contrast checks, and the production build. Focused commands are available through `npm.cmd run type-check`, `npm.cmd run lint`, `npm.cmd run test:unit`, and `npm.cmd run test:contrast`.
 
+Publishing uses `npm.cmd run finalize-package`, which runs the current PPTB manifest validator without network checks, builds the tool, confirms the declared entry point and SVG icon exist under `dist`, and performs an npm package dry run. Run `npm.cmd run validate` separately with network access before publishing to include official URL reachability checks.
+
 ## Change guidance
 
 - Preserve the `ParsedSolution` contract when adding artifact families.

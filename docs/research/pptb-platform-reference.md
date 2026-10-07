@@ -12,7 +12,7 @@ Use `toolboxAPI.connections.getActiveConnection()` and, where multi-connection s
 
 ## Manifest [DOC]
 
-Require scoped `name`, semver `version`, `displayName`, `description`, `main`, top-level `icon`, `license`, contributors, and `configurations.repository`. Set `features.minAPI` to at least `1.2.0`. The icon is relative to `dist`, and SVG shapes must use `fill="currentColor"` or `stroke="currentColor"`. Run `pptb-validate package.json` before release.
+Require scoped `name`, semver `version`, `displayName`, `description`, `main`, top-level `icon`, `license`, contributors, `configurations.repository`, and `configurations.readmeUrl`. Set `features.connectionRequirement` to `optional` for tools that also run without Dataverse, and set `features.minAPI` to the lowest host API version required. The icon is relative to `dist`, and SVG shapes should use `fill="currentColor"` or `stroke="currentColor"` when a monochrome adaptive icon is appropriate. Run `npm run validate` before release and use `npm run validate:offline` in CI to avoid transient URL-check failures.
 
 ## Settings, Files, Themes [DOC]
 

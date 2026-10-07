@@ -10,7 +10,11 @@ async function validateOffline() {
 
   result.errors.forEach((message) => console.error(`Manifest error: ${message}`));
   result.warnings.forEach((message) => console.warn(`Manifest warning: ${message}`));
-  if (!result.valid) process.exitCode = 1;
+  if (!result.valid) {
+    process.exitCode = 1;
+  } else {
+    console.log('PPTB manifest validation passed (URL checks skipped).');
+  }
 }
 
 validateOffline().catch((error) => {

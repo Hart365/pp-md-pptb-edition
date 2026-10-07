@@ -54,6 +54,23 @@ describe('Markdown-to-PDF export', () => {
     expect(raw).not.toMatch(/\/Subtype \/Image/);
   });
 
+  it('removes complete HTML tags when attributes contain greater-than signs', async () => {
+    const markdown = '<table>\n<tr><td><span title="2 > 1">Clean</span></td></tr>\n</table>';
+    const blob = await createRenderedDocumentationPdf(markdown, 'HTML table');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const raw = Array.from(bytes, (byte) => String.fromCharCode(byte)).join('');
+    const compressedStreams = [...raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)];
+    const pageText = await Promise.all(compressedStreams.map(async (match) => {
+      const compressed = Uint8Array.from(match[1], (character) => character.charCodeAt(0));
+      const decompressed = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
+      const content = new Uint8Array(await new Response(decompressed).arrayBuffer());
+      return Array.from(content, (byte) => String.fromCharCode(byte)).join('');
+    })).then((streams) => streams.join('\n'));
+
+    expect(pageText).toContain('(Clean)');
+    expect(pageText).not.toContain('1">Clean');
+  });
+
   it('falls back to rendering the raw diagram source when no pre-rendered image is supplied', async () => {
     const blob = await createRenderedDocumentationPdf(SAMPLE_MARKDOWN, 'Sample Solution', []);
     expect(blob.type).toBe('application/pdf');

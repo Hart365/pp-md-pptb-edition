@@ -1,6 +1,6 @@
 {
-  "name": "@powerplatform/pp-md-tool",
-  "version": "1.1.0",
+  "name": "@hart365/pp-md-pptb-edition",
+  "version": "1.1.2",
   "displayName": "PP-MD Power Platform Markdown Document Generator",
   "description": "Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection",
   "author": "Mike Hartley",
@@ -12,30 +12,47 @@
   ],
   "type": "module",
   "main": "index.html",
-  "icon": "pp-md.svg",
+  "icon": "icons/pp-md.svg",
   "configurations": {
-    "repository": "https://github.com/Hart365/pp-md-pptb-edition/",
-    "readmeUrl": "https://raw.githubusercontent.com/Hart365/pp-md-pptb-edition/main/README.md",
-    "website": "https://github.com/Hart365/pp-md-pptb-edition/"
+    "repository": "https://github.com/Hart365/pp-md-pptb-edition",
+    "readmeUrl": "https://raw.githubusercontent.com/Hart365/pp-md-pptb-edition/refs/heads/main/README.md",
+    "website": "https://github.com/Hart365/pp-md-pptb-edition"
+  },
+  "cspExceptions": {
+    "connect-src": [
+      {
+        "domain": "api.github.com",
+        "exceptionReason": "Optionally checks GitHub Releases when the user requests an update check.",
+        "optional": true
+      }
+    ]
   },
   "features": {
     "multiConnection": "none",
+    "connectionRequirement": "optional",
     "minAPI": "1.2.0"
   },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && node scripts/normalize-dist-assets.mjs",
     "build:with-maps": "tsc && vite build --mode debug && node scripts/normalize-dist-assets.mjs",
     "preview": "vite preview",
-    "validate": "pptb-validate package.json",
+    "validate": "pptb-validate",
     "validate:offline": "node scripts/validate-offline.cjs",
+    "validate:dist": "node scripts/validate-dist.cjs",
+    "validate:publish": "npm run validate:offline && npm run build && npm run validate:dist && npm pack --dry-run",
     "test:contrast": "node scripts/check-contrast.mjs",
     "lint": "eslint src --report-unused-disable-directives --max-warnings 0",
     "format": "eslint src --fix",
     "type-check": "tsc --noEmit",
     "test:unit": "vitest run",
-    "test": "npm run validate:offline && npm run lint && npm run type-check && npm run test:unit && npm run test:contrast && npm run build",
-    "finalize-package": "npm install --save-exact --save-dev --package-lock-only"
+    "test": "npm run validate:offline && npm run lint && npm run type-check && npm run test:unit && npm run test:contrast && npm run build && npm run validate:dist",
+    "finalize-package": "npm run validate:publish"
   },
   "dependencies": {
     "dompurify": "^3.4.15",
@@ -56,6 +73,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@pptb/types": "^1.2.5",
+    "@pptb/validate": "1.0.2",
     "@types/mdast": "^4.0.4",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
@@ -71,6 +89,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/Hart365/pp-md-pptb-edition.git"
+  },
+  "homepage": "https://github.com/Hart365/pp-md-pptb-edition#readme",
+  "bugs": {
+    "url": "https://github.com/Hart365/pp-md-pptb-edition/issues"
   },
   "keywords": [
     "powerplatform",
