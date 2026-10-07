@@ -72,6 +72,19 @@ const ENTITY_PROPERTIES = [
   'PrimaryNameAttribute',
 ] as const;
 
+const FETCH_XML_PAGE_SIZE = 5000;
+const FETCH_XML_MAX_PAGES = 20;
+const ODATA_MAX_ROWS = 5000;
+const MAX_SOLUTION_ENTITY_LOOKUPS = 500;
+const ENTITY_METADATA_BATCH_SIZE = 10;
+
+class DataverseResultLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DataverseResultLimitError';
+  }
+}
+
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -148,14 +161,51 @@ function solutionComponentLink(solutionId: string, recordId: string, componentTy
   </link-entity>`;
 }
 
+function withFetchXmlPage(fetchXml: string, page: number, pagingCookie?: string): string {
+  const match = /<fetch\b([^>]*)>/i.exec(fetchXml);
+  if (!match) throw new Error('Invalid FetchXML: missing fetch root element.');
+
+  const attributes = match[1].replace(/\s+(?:count|page|paging-cookie)\s*=\s*(?:"[^"]*"|'[^']*')/gi, '');
+  const pagingAttributes = [`count="${FETCH_XML_PAGE_SIZE}"`, `page="${page}"`];
+  if (pagingCookie) pagingAttributes.push(`paging-cookie="${escapeXml(pagingCookie)}"`);
+
+  return fetchXml.replace(match[0], `<fetch${attributes} ${pagingAttributes.join(' ')}>`);
+}
+
 async function fetchXmlQuery(fetchXml: string): Promise<Record<string, unknown>[]> {
-  const result = await window.dataverseAPI.fetchXmlQuery(fetchXml);
-  return result.value;
+  const fetchRoot = /<fetch\b([^>]*)>/i.exec(fetchXml);
+  if (!fetchRoot) throw new Error('Invalid FetchXML: missing fetch root element.');
+  if (/\btop\s*=/i.test(fetchRoot[1])) {
+    const result = await window.dataverseAPI.fetchXmlQuery(fetchXml);
+    return result.value;
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  let pagingCookie: string | undefined;
+  for (let page = 1; page <= FETCH_XML_MAX_PAGES; page += 1) {
+    const result = await window.dataverseAPI.fetchXmlQuery(withFetchXmlPage(fetchXml, page, pagingCookie));
+    rows.push(...result.value);
+    pagingCookie = result['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'];
+    if (!pagingCookie) return rows;
+  }
+
+  throw new DataverseResultLimitError(
+    `FetchXML results exceeded the ${FETCH_XML_PAGE_SIZE * FETCH_XML_MAX_PAGES}-row safety limit. Narrow the selected solution or collection scope.`,
+  );
 }
 
 /** Query a Dataverse entity set with explicit OData selection and filtering. */
 async function queryDataverse(odataQuery: string): Promise<Record<string, unknown>[]> {
-  const result = await window.dataverseAPI.queryData(odataQuery);
+  const separator = odataQuery.includes('?') ? '&' : '?';
+  const boundedQuery = /(?:\?|&)\$top=/i.test(odataQuery)
+    ? odataQuery
+    : `${odataQuery}${separator}$top=${ODATA_MAX_ROWS}`;
+  const result = await window.dataverseAPI.queryData(boundedQuery);
+  if (result.value.length >= ODATA_MAX_ROWS) {
+    throw new DataverseResultLimitError(
+      `OData results reached the ${ODATA_MAX_ROWS}-row safety limit and may be incomplete. Narrow the selected solution or collection scope.`,
+    );
+  }
   return result.value;
 }
 
@@ -311,8 +361,9 @@ async function queryDataverseWithFallback(
     }
   }
 
-  if (errors.length > 0 && warnings && warnOnFailure) {
-    warnings.push(warningMessage(section, errors[0]));
+  const resultLimitError = errors.find((error) => error instanceof DataverseResultLimitError);
+  if (errors.length > 0 && warnings && (warnOnFailure || resultLimitError)) {
+    warnings.push(warningMessage(section, resultLimitError ?? errors[0]));
   }
 
   return [];
@@ -485,12 +536,25 @@ async function getEntityLogicalNamesForSolution(solutionId: string): Promise<str
     </fetch>
   `);
 
-  const ids = new Set(componentRows.map((row) => asString(row.objectid)).filter(Boolean));
-  if (ids.size === 0) return [];
+  const ids = Array.from(new Set(componentRows.map((row) => asString(row.objectid)).filter(Boolean)));
+  if (ids.length === 0) return [];
+  if (ids.length > MAX_SOLUTION_ENTITY_LOOKUPS) {
+    throw new DataverseResultLimitError(
+      `The selected solution contains more than ${MAX_SOLUTION_ENTITY_LOOKUPS} table components. Narrow the selected solution before generating documentation.`,
+    );
+  }
 
-  const allEntities = await window.dataverseAPI.getAllEntitiesMetadata([...ENTITY_PROPERTIES]);
-  return allEntities.value
-    .filter((entity) => ids.has(asString(entity.MetadataId)) && !asBoolean(entity.IsIntersect))
+  const entities: Array<{ MetadataId: string; LogicalName: string; IsIntersect?: boolean }> = [];
+  for (let index = 0; index < ids.length; index += ENTITY_METADATA_BATCH_SIZE) {
+    const batch = ids.slice(index, index + ENTITY_METADATA_BATCH_SIZE);
+    const metadata = await Promise.all(batch.map((id) => (
+      window.dataverseAPI.getEntityMetadata(id, false, ['MetadataId', 'LogicalName', 'IsIntersect'])
+    )));
+    entities.push(...metadata);
+  }
+
+  return entities
+    .filter((entity) => !asBoolean(entity.IsIntersect))
     .map((entity) => asString(entity.LogicalName))
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));

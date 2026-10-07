@@ -14,6 +14,7 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 - Filter connected solutions by publisher and managed or unmanaged status.
 - Keep connected collection read-only and scoped to the selected solution components through `solutioncomponent` records.
 - Choose between solution-only collection, bounded direct-reference enrichment, and a separately labelled environment appendix.
+- Page FetchXML in 5,000-record batches (up to 100,000 rows), cap OData at 5,000 rows, and batch selected-table metadata lookups with explicit safety limits.
 - Treat unavailable optional modern-artifact endpoints as capability gaps without failing the rest of the document.
 
 ### Documentation coverage
@@ -62,13 +63,14 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.1.3 |
+| version | 1.1.4 |
 | description | Generate structured Markdown documentation from Solution ZIP files or a direct Dataverse connection |
 | icon | icons/pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |
 | configurations.readmeUrl | https://raw.githubusercontent.com/Hart365/pp-md-pptb-edition/refs/heads/main/README.md |
 | configurations.website | https://github.com/Hart365/pp-md-pptb-edition |
 | features.connectionRequirement | optional |
+| features.minAPI | 1.2.2 |
 | license | MIT |
 
 ## User Guide
@@ -215,6 +217,10 @@ The package intentionally declares `api.github.com` as an optional CSP connectio
 - Repository: https://github.com/Hart365/pp-md-pptb-edition
 - Issues: https://github.com/Hart365/pp-md-pptb-edition/issues
 - Website: https://github.com/Hart365/pp-md-pptb-edition
+
+## AI Assistance
+
+Parts of this tool were generated with GitHub Copilot and reviewed, tested, and maintained by the contributors listed in package.json.
 
 ## License
 

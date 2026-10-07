@@ -4,7 +4,7 @@ Source: Power Platform ToolBox tool-development documentation. Verified 2026-09-
 
 ## Architecture [DOC]
 
-Tools run in sandboxed iframes. The host injects `window.toolboxAPI`, `window.dataverseAPI`, and `window.powerplatformAPI`. Do not handle tokens; use the injected clients. External network access requires `cspExceptions`, which PP-MD must not declare because dependencies, including Mermaid, are bundled locally.
+Tools run in sandboxed iframes. The host injects `window.toolboxAPI`, `window.dataverseAPI`, and `window.powerplatformAPI`. Do not handle tokens; use the injected clients. Declare only CSP exceptions required by runtime network features; PP-MD uses one optional `api.github.com` exception for its user-initiated update check. Dependencies, including Mermaid, are bundled locally and need no external network access.
 
 ## Connections [DOC]
 
