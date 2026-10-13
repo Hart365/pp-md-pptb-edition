@@ -63,7 +63,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.1.4 |
+| version | 1.1.6 |
 | description | Generate structured Markdown documentation from Solution ZIP files or a direct Dataverse connection |
 | icon | icons/pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |

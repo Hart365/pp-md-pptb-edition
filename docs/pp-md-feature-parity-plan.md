@@ -119,7 +119,7 @@ Exit criteria: each retained export works through PPTB APIs and has a documented
 3. Add token contrast checks for all themes, build, PPTB manifest validation and a connected-mode smoke fixture.
 4. Increment the tool version only when an implementation phase changes shipped behaviour; document each release delta in the README and design docs.
 
-### Current Release Status (1.1.4)
+### Current Release Status (1.1.6)
 
 - Completed: solution-scoped connected collection, modern artifact coverage, dependency reporting, explicit Dataverse collection policies, ToolBox-backed preset persistence, Markdown import/search, companion diagrams, sanitised rendering, and the automated contrast audit.
 - Completed: TypeScript, lint, offline package validation, unit tests, contrast checks, and production build are wired into the standard `npm test` command.

@@ -64,6 +64,36 @@ for (const requiredFile of ['README.md', 'LICENSE']) {
   }
 }
 
+const versionSurfaces = [
+  {
+    path: 'README.md',
+    pattern: new RegExp(`\\| version \\| ${packageJson.version.replaceAll('.', '\\.')} \\|`),
+    label: 'README manifest version',
+  },
+  {
+    path: '.github/workflows/release.yml',
+    pattern: new RegExp(`default: v${packageJson.version.replaceAll('.', '\\.')}`),
+    label: 'release workflow default',
+  },
+  {
+    path: 'docs/pp-md-feature-parity-plan.md',
+    pattern: new RegExp(`Current Release Status \\(${packageJson.version.replaceAll('.', '\\.')}\\)`),
+    label: 'release status documentation',
+  },
+];
+
+for (const surface of versionSurfaces) {
+  const surfacePath = path.join(rootDir, ...surface.path.split('/'));
+  if (!fs.existsSync(surfacePath)) {
+    errors.push(`${surface.label} file is missing: ${surface.path}`);
+    continue;
+  }
+
+  if (!surface.pattern.test(fs.readFileSync(surfacePath, 'utf8'))) {
+    errors.push(`${surface.label} must match package version ${packageJson.version}: ${surface.path}`);
+  }
+}
+
 if (errors.length > 0) {
   errors.forEach((message) => console.error(`Package error: ${message}`));
   process.exitCode = 1;
