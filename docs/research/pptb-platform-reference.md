@@ -24,4 +24,4 @@ Documentation collection must continue after a component failure and surface fai
 
 ## Build And Test [DOC]
 
-Run `npm run build`, then use PPTB Debug > Load Local Tool and select the tool root. Reload the tool tab after changes. PDF export has no documented iframe API and needs a separate print/export design.
+Run `npm run build`, then use PPTB Debug > Load Local Tool and select the tool root. Vite tools must emit relative asset URLs and a single classic IIFE bundle; PPTB's sandboxed iframe does not reliably load Vite's default ES-module output. Reload the tool tab after changes. PDF export has no documented iframe API and needs a separate print/export design.

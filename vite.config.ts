@@ -4,13 +4,38 @@
  * This tool runs in the Power Platform ToolBox iframe environment.
  */
 import { defineConfig } from 'vite';
+import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+
+function fixHtmlForPptb(): Plugin {
+  return {
+    name: 'fix-html-for-pptb',
+    enforce: 'post',
+    transformIndexHtml(html) {
+      const scripts: string[] = [];
+      const htmlWithoutScripts = html
+        .replace(/\s*type="module"/g, '')
+        .replace(/\s*crossorigin/g, '')
+        .replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/g, (script) => {
+          scripts.push(script);
+          return '';
+        });
+
+      if (scripts.length === 0) {
+        return htmlWithoutScripts;
+      }
+
+      return htmlWithoutScripts.replace('</body>', `  ${scripts.join('\n  ')}\n</body>`);
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const enableSourceMaps = mode !== 'production';
 
   return {
-    plugins: [react()],
+    plugins: [react(), fixHtmlForPptb()],
+    base: './',
     build: {
       // Output to the standard dist folder
       outDir: 'dist',
@@ -23,6 +48,8 @@ export default defineConfig(({ mode }) => {
       cssCodeSplit: false,
       rollupOptions: {
         output: {
+          format: 'iife',
+          inlineDynamicImports: true,
           entryFileNames: 'assets/pp-md-app.js',
           chunkFileNames: 'assets/[name].js',
           assetFileNames: (assetInfo) => {
