@@ -57,6 +57,24 @@ function scheduleRender<T>(task: () => Promise<T>): Promise<T> {
  */
 const svgCache = new Map<string, { svg: string; sourceId: string }>();
 
+let offscreenRenderCounter = 0;
+
+/**
+ * Renders a Mermaid chart to SVG markup outside of the React tree (used by
+ * batch exports). Shares the viewer's serialized render queue and config so
+ * it never competes with on-screen diagrams for the main thread.
+ */
+export async function renderMermaidToSvg(chart: string, theme: MermaidDiagramProps['theme'] = 'neutral'): Promise<string> {
+  const m = (await import('mermaid')).default;
+  offscreenRenderCounter += 1;
+  const renderId = `m_export_${offscreenRenderCounter}`;
+  const { svg } = await scheduleRender(() => {
+    m.initialize({ ...mermaidCfg, theme });
+    return m.render(renderId, chart);
+  });
+  return svg;
+}
+
 export interface MermaidDiagramProps {
   chart: string;
   caption?: string;
@@ -79,6 +97,116 @@ export interface MermaidDiagramProps {
 const activeDiagramActivators = new Set<() => void>();
 export function forceRenderAllMountedDiagrams(): void {
   activeDiagramActivators.forEach((activate) => activate());
+}
+
+/**
+ * Low-priority background render scheduler. Mounted diagrams register here and
+ * are rendered one at a time, only while the browser is idle and the user is
+ * not scrolling. Diagrams currently in the viewport take priority; otherwise
+ * diagrams render top-down in document order. Scrolling pauses the queue and
+ * it resumes shortly after scrolling stops.
+ */
+interface ScheduledDiagram {
+  el: HTMLElement;
+  activate: () => void;
+  visible: boolean;
+  done: boolean;
+}
+
+const SCROLL_IDLE_MS = 200;
+const BETWEEN_RENDERS_MS = 120;
+const scheduledDiagrams = new Set<ScheduledDiagram>();
+let inFlightDiagram: ScheduledDiagram | null = null;
+let isUserScrolling = false;
+let scrollIdleTimer: ReturnType<typeof setTimeout> | undefined;
+let pumpScheduled = false;
+let visibilityObserver: IntersectionObserver | null = null;
+const diagramsByElement = new WeakMap<Element, ScheduledDiagram>();
+
+function handleAnyScroll(): void {
+  isUserScrolling = true;
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
+  scrollIdleTimer = setTimeout(() => {
+    isUserScrolling = false;
+    pumpRenderQueue();
+  }, SCROLL_IDLE_MS);
+}
+
+function compareDocumentOrder(a: ScheduledDiagram, b: ScheduledDiagram): number {
+  if (a.el === b.el) return 0;
+  return a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+}
+
+function runNextRender(): void {
+  pumpScheduled = false;
+  if (isUserScrolling || inFlightDiagram) return;
+  const pending = Array.from(scheduledDiagrams).filter((d) => !d.done && d.el.isConnected);
+  if (pending.length === 0) return;
+  const visible = pending.filter((d) => d.visible).sort(compareDocumentOrder);
+  const next = visible[0] ?? pending.sort(compareDocumentOrder)[0];
+  inFlightDiagram = next;
+  next.activate();
+}
+
+function pumpRenderQueue(delayMs = 0): void {
+  if (pumpScheduled) return;
+  pumpScheduled = true;
+  const schedule = () => {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(runNextRender, { timeout: 2000 });
+    } else {
+      setTimeout(runNextRender, 50);
+    }
+  };
+  if (delayMs > 0) setTimeout(schedule, delayMs);
+  else schedule();
+}
+
+function completeScheduledDiagram(entry: ScheduledDiagram): void {
+  if (entry.done) return;
+  entry.done = true;
+  if (inFlightDiagram === entry) inFlightDiagram = null;
+  pumpRenderQueue(BETWEEN_RENDERS_MS);
+}
+
+function registerScheduledDiagram(el: HTMLElement, activate: () => void): ScheduledDiagram {
+  const entry: ScheduledDiagram = { el, activate, visible: false, done: false };
+  if (scheduledDiagrams.size === 0 && typeof document !== 'undefined') {
+    document.addEventListener('scroll', handleAnyScroll, { capture: true, passive: true });
+  }
+  scheduledDiagrams.add(entry);
+  diagramsByElement.set(el, entry);
+  if (typeof IntersectionObserver !== 'undefined') {
+    visibilityObserver ??= new IntersectionObserver((observed) => {
+      let becameVisible = false;
+      observed.forEach((item) => {
+        const target = diagramsByElement.get(item.target);
+        if (!target) return;
+        target.visible = item.isIntersecting;
+        if (item.isIntersecting && !target.done) becameVisible = true;
+      });
+      if (becameVisible) pumpRenderQueue();
+    }, { rootMargin: '100px 0px' });
+    visibilityObserver.observe(el);
+  }
+  pumpRenderQueue();
+  return entry;
+}
+
+function unregisterScheduledDiagram(entry: ScheduledDiagram): void {
+  scheduledDiagrams.delete(entry);
+  diagramsByElement.delete(entry.el);
+  visibilityObserver?.unobserve(entry.el);
+  if (inFlightDiagram === entry) inFlightDiagram = null;
+  if (scheduledDiagrams.size === 0) {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('scroll', handleAnyScroll, { capture: true });
+    }
+    visibilityObserver?.disconnect();
+    visibilityObserver = null;
+  } else {
+    pumpRenderQueue();
+  }
 }
 
 /**
@@ -108,8 +236,9 @@ export function MermaidDiagram({ chart, caption = 'Diagram', onRendered, theme =
     };
   }, []);
 
-  // Only render once the diagram is near the viewport (WCAG 2.2.2 friendly: avoids
-  // freezing the page by rendering every diagram in a large document at once).
+  // Render via the low-priority background scheduler: one diagram at a time,
+  // only while idle and not scrolling, visible diagrams first, then top-down.
+  const scheduledRef = useRef<ScheduledDiagram | null>(null);
   useEffect(() => {
     if (forceRender) {
       queueMicrotask(() => setIsNearViewport(true));
@@ -117,18 +246,12 @@ export function MermaidDiagram({ chart, caption = 'Diagram', onRendered, theme =
     }
     const el = figRef.current;
     if (!el) return;
-    if (typeof IntersectionObserver === 'undefined') {
-      queueMicrotask(() => setIsNearViewport(true));
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        setIsNearViewport(true);
-        observer.disconnect();
-      }
-    }, { rootMargin: '400px 0px' });
-    observer.observe(el);
-    return () => observer.disconnect();
+    const entry = registerScheduledDiagram(el, () => setIsNearViewport(true));
+    scheduledRef.current = entry;
+    return () => {
+      unregisterScheduledDiagram(entry);
+      scheduledRef.current = null;
+    };
   }, [forceRender]);
 
   const fitZoom = () => {
@@ -232,6 +355,7 @@ export function MermaidDiagram({ chart, caption = 'Diagram', onRendered, theme =
         }
       } finally {
         if (active) onRendered?.(id);
+        if (scheduledRef.current) completeScheduledDiagram(scheduledRef.current);
       }
     };
 

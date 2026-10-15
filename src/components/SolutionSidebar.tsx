@@ -68,6 +68,35 @@ export function SolutionSidebar({
         </button>
       </div>
 
+      {/* Consolidated document (2+ solutions) */}
+      {combinedIndex >= 0 && solutions[combinedIndex] && (
+        <div className={styles.combinedLinkPanel} aria-label="Consolidated documentation">
+          <p className={styles.combinedTitle}>Consolidated</p>
+          <button
+            type="button"
+            className={[styles.item, styles.combinedItem, activeIndex === combinedIndex ? styles.active : ''].filter(Boolean).join(' ')}
+            onClick={() => onSelect(combinedIndex)}
+            aria-current={activeIndex === combinedIndex ? 'page' : undefined}
+            aria-label="View combined documentation for all selected solutions"
+          >
+            <span className={styles.solIcon} aria-hidden="true">🧩</span>
+            <span className={styles.solName}>All Selected Solutions</span>
+          </button>
+          {diagramsAvailable && onSelectDiagrams && (
+            <button
+              type="button"
+              className={[styles.item, styles.combinedItem, diagramsActive ? styles.active : ''].filter(Boolean).join(' ')}
+              onClick={onSelectDiagrams}
+              aria-current={diagramsActive ? 'page' : undefined}
+              aria-label="View diagrams for all selected solutions"
+            >
+              <span className={styles.solIcon} aria-hidden="true">📊</span>
+              <span className={styles.solName}>Diagrams</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Solution list */}
       <ul className={styles.list} role="list">
         {solutions.map((sol, idx) => {
@@ -99,33 +128,6 @@ export function SolutionSidebar({
           );
         })}
       </ul>
-
-      {combinedIndex >= 0 && solutions[combinedIndex] && (
-        <div className={styles.combinedLinkPanel}>
-          <button
-            type="button"
-            className={[styles.item, styles.combinedItem, activeIndex === combinedIndex ? styles.active : ''].filter(Boolean).join(' ')}
-            onClick={() => onSelect(combinedIndex)}
-            aria-current={activeIndex === combinedIndex ? 'page' : undefined}
-            aria-label="View combined documentation for all selected solutions"
-          >
-            <span className={styles.solIcon} aria-hidden="true">🧩</span>
-            <span className={styles.solName}>All Selected Solutions</span>
-          </button>
-          {diagramsAvailable && onSelectDiagrams && (
-            <button
-              type="button"
-              className={[styles.item, styles.combinedItem, diagramsActive ? styles.active : ''].filter(Boolean).join(' ')}
-              onClick={onSelectDiagrams}
-              aria-current={diagramsActive ? 'page' : undefined}
-              aria-label="View diagrams for all selected solutions"
-            >
-              <span className={styles.solIcon} aria-hidden="true">📊</span>
-              <span className={styles.solName}>Diagrams</span>
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Summary counts */}
       {solutions[activeIndex] && (

@@ -48,13 +48,38 @@ if (fs.existsSync(entryPath)) {
   if (scriptIndex === -1 || bodyIndex === -1 || scriptIndex > bodyIndex) {
     errors.push('main must include its built script before the closing body tag.');
   }
+
+  // Every script referenced by main is loaded as a classic script, so it must not
+  // contain ES module syntax (import.meta / import / export), otherwise the browser
+  // throws a SyntaxError and PPTB shows a blank screen.
+  const vm = require('node:vm');
+  const entryDir = path.dirname(entryPath);
+  for (const match of entryHtml.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
+    const scriptPath = path.resolve(entryDir, match[1]);
+    if (!fs.existsSync(scriptPath)) {
+      errors.push(`main references a missing script: ${match[1]}`);
+      continue;
+    }
+    const code = fs.readFileSync(scriptPath, 'utf8');
+    if (/\bimport\.meta\b/.test(code)) {
+      errors.push(`script must not contain import.meta (invalid in classic scripts): ${match[1]}`);
+    }
+    try {
+      new vm.Script(code, { filename: match[1] });
+    } catch (error) {
+      errors.push(`script does not parse as a classic script (${error.message}): ${match[1]}`);
+    }
+  }
 }
 
 const iconPath = path.join(distDir, ...packageJson.icon.split('/'));
 if (fs.existsSync(iconPath)) {
   const iconSvg = fs.readFileSync(iconPath, 'utf8');
-  if (!/\b(?:fill|stroke)=["']currentColor["']/i.test(iconSvg)) {
-    errors.push('icon must use currentColor so PPTB can render it in light and dark themes.');
+  if (!/<svg[\s>]/i.test(iconSvg)) {
+    errors.push(`icon is not a valid SVG document: ${packageJson.icon}`);
+  }
+  if (!/\bviewBox=/i.test(iconSvg)) {
+    errors.push(`icon must declare a viewBox so PPTB can scale it: ${packageJson.icon}`);
   }
 }
 

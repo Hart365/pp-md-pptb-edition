@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { fetchEnvironmentVariables, fetchModernDataverseArtifacts, listDataverseSolutions } from './solutionService';
+import { buildEntityDefinition, fetchEnvironmentVariables, fetchModernDataverseArtifacts, listDataverseSolutions } from './solutionService';
 
 describe('fetchModernDataverseArtifacts', () => {
   it('collects connected modern artifact families scoped to the selected solution', async () => {
@@ -252,5 +252,55 @@ describe('fetchModernDataverseArtifacts', () => {
     expect(mockFetchXml.mock.calls[0][0]).toContain('componenttype');
     expect(mockFetchXml.mock.calls[0][0]).toContain('380');
     expect(warnings).toEqual([]);
+  });
+
+  it('fills lookup targets and option set names from typed attribute queries and relationships', async () => {
+    const mockQueryData = vi.fn(async (url: string) => {
+      if (url.includes('LookupAttributeMetadata')) {
+        return { value: [{ LogicalName: 'primarycontactid', Targets: ['contact'] }] };
+      }
+      if (url.includes('Microsoft.Dynamics.CRM.PicklistAttributeMetadata')) {
+        return {
+          value: [{
+            LogicalName: 'industrycode',
+            OptionSet: { Name: 'account_industrycode', Options: [{ Value: 1, Label: { UserLocalizedLabel: { Label: 'Retail' } } }] },
+          }],
+        };
+      }
+      return { value: [] };
+    });
+    const mockRelated = vi.fn(async (_name: string, kind: string) => {
+      if (kind === 'Attributes') {
+        return {
+          value: [
+            { LogicalName: 'primarycontactid', AttributeType: 'Lookup' },
+            { LogicalName: 'parentaccountid', AttributeType: 'Lookup' },
+            { LogicalName: 'industrycode', AttributeType: 'Picklist' },
+          ],
+        };
+      }
+      if (kind === 'ManyToOneRelationships') {
+        return { value: [{ SchemaName: 'account_parent', ReferencingEntity: 'account', ReferencingAttribute: 'parentaccountid', ReferencedEntity: 'account' }] };
+      }
+      return { value: [] };
+    });
+    Object.defineProperty(globalThis, 'window', {
+      value: {
+        dataverseAPI: {
+          queryData: mockQueryData,
+          getEntityMetadata: vi.fn(async () => ({ LogicalName: 'account', PrimaryNameAttribute: 'name' })),
+          getEntityRelatedMetadata: mockRelated,
+        },
+      },
+      configurable: true,
+    });
+
+    const entity = await buildEntityDefinition('account');
+    const byName = new Map(entity.attributes.map((attribute) => [attribute.name, attribute]));
+
+    expect(byName.get('primarycontactid')?.lookupTarget).toBe('contact');
+    expect(byName.get('parentaccountid')?.lookupTarget).toBe('account');
+    expect(byName.get('industrycode')?.optionSetName).toBe('account_industrycode');
+    expect(byName.get('industrycode')?.options).toHaveLength(1);
   });
 });

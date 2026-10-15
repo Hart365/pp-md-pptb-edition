@@ -76,6 +76,8 @@ export interface DocumentationSettings {
   metadata: DocumentationMetadataSettings;
   securityRoleFilters: DocumentationSecurityRoleFilters;
   separateDiagramsDocument: boolean;
+  /** When two or more solutions are generated, also create a consolidated "All Selected Solutions" document. */
+  createConsolidatedDocument: boolean;
   /** Mermaid built-in theme applied to generated diagrams (a colour scheme, not a document theme). */
   diagramColourTheme: MermaidColourTheme;
 }
@@ -86,6 +88,7 @@ export const DEFAULT_DOCUMENTATION_SETTINGS: DocumentationSettings = {
   metadata: { includeDefaultColumns: true, excludeVirtualAttributes: false, attributeSelectionMode: 'all', manualAttributes: [], includeTypeColumn: true, includeRequiredLevelInfo: true, includeCustomColumn: true, includeAuditInfo: true, includeNotesColumn: true, includeDescriptionColumn: true, includeAdvancedFind: false, includeFieldSecurity: false, includeMetadataSource: false },
   securityRoleFilters: { onlyTablesInCurrentSolution: false, onlyCustomTables: false },
   separateDiagramsDocument: false,
+  createConsolidatedDocument: true,
   diagramColourTheme: 'neutral',
 };
 
@@ -131,23 +134,28 @@ export interface DocumentContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Escapes characters special to Markdown tables (pipe and backslash).
+ * Escapes characters special to Markdown tables (pipe and backslash) and
+ * converts line breaks to `<br>` so multi-line text cannot split a table row.
  *
  * @param text - Raw text to escape
  * @returns Escaped text safe for use in a Markdown table cell
  */
 function mdEscape(text: string | undefined | null): string {
   if (!text) return '';
-  return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .trim()
+    .replace(/\s*[\r\n]+\s*/g, '<br>');
 }
 
-function htmlEscape(text: string | undefined | null): string {
-  if (!text) return '';
+/** Formats text as a GFM blockquote, prefixing every line with `> `. */
+function blockquote(text: string): string {
   return text
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => (line.trim() ? `> ${line.trimEnd()}` : '>'))
+    .join('\n');
 }
 
 /**
@@ -357,19 +365,17 @@ function resolveAttributeDisplayName(attributeName: string, attributeDisplayMap:
 function accessDepthBadge(depth: number): string {
   const normalized = Math.max(0, Math.min(4, depth));
   const labelsByDepth: Record<number, string> = {
-    0: 'None',
-    1: 'User',
-    2: 'Business Unit',
-    3: 'Parent Child Business Unit',
-    4: 'Org',
+    0: '🔴 None',
+    1: '🟡 User',
+    2: '🔵 Business Unit',
+    3: '🟣 Parent Child Business Unit',
+    4: '🟢 Org',
   };
-  const label = labelsByDepth[normalized] ?? String(normalized);
-  return `<span class="ppmd-privilege ppmd-privilege-${normalized}">${htmlEscape(label)}</span>`;
+  return labelsByDepth[normalized] ?? String(normalized);
 }
 
 function allowedBadge(allowed: boolean): string {
-  const label = allowed ? 'Allowed' : 'Not Allowed';
-  return `<span class="ppmd-privilege ppmd-permission-${allowed ? 'allowed' : 'denied'}">${label}</span>`;
+  return allowed ? '✅ Allowed' : '❌ Not Allowed';
 }
 
 function processTitle(proc: ProcessDefinition): string {
@@ -814,14 +820,14 @@ function generateDocumentContextSection(context: DocumentContext | undefined): s
 
   const lines: string[] = [];
 
-  lines.push('<table>');
-  lines.push(`<tr><td><strong>Client</strong></td><td>${htmlEscape(context?.client)}</td></tr>`);
-  lines.push(`<tr><td><strong>Contract</strong></td><td>${htmlEscape(context?.contract)}</td></tr>`);
-  lines.push(`<tr><td><strong>Contract ID/SoW</strong></td><td>${htmlEscape(context?.sow)}</td></tr>`);
-  lines.push(`<tr><td><strong>Project</strong></td><td>${htmlEscape(context?.project)}</td></tr>`);
-  lines.push(`<tr><td><strong>Sprint</strong></td><td>${htmlEscape(context?.sprint)}</td></tr>`);
-  lines.push(`<tr><td><strong>Release Date</strong></td><td>${htmlEscape(context?.releaseDate)}</td></tr>`);
-  lines.push('</table>');
+  lines.push('| Property | Value |');
+  lines.push('| --- | --- |');
+  lines.push(`| **Client** | ${mdEscape(context?.client)} |`);
+  lines.push(`| **Contract** | ${mdEscape(context?.contract)} |`);
+  lines.push(`| **Contract ID/SoW** | ${mdEscape(context?.sow)} |`);
+  lines.push(`| **Project** | ${mdEscape(context?.project)} |`);
+  lines.push(`| **Sprint** | ${mdEscape(context?.sprint)} |`);
+  lines.push(`| **Release Date** | ${mdEscape(context?.releaseDate)} |`);
   lines.push('');
 
   return lines.join('\n');
@@ -1293,7 +1299,10 @@ function generateEntitiesSection(
       sortByLabel(documentedAttributes, (attr) => labelWithSchema(attr.displayName || attr.name, attr.name)).forEach((attr) => {
         const notes: string[] = [];
         if (attr.isPrimaryName) notes.push('🔑 Primary Name');
-        if (attr.lookupTarget) notes.push(`→ ${entityDisplayLabel(attr.lookupTarget, entityMap)}`);
+        if (attr.lookupTarget) {
+          const targets = attr.lookupTarget.split(',').map((target) => target.trim()).filter(Boolean);
+          notes.push(`→ ${targets.map((target) => entityDisplayLabel(target, entityMap)).join(', ')}`);
+        }
         if (attr.optionSetName) notes.push(`OptionSet: ${attr.optionSetName}`);
         if (attr.maxLength)     notes.push(`Max: ${attr.maxLength}`);
         if (attr.precision)     notes.push(`Precision: ${attr.precision}`);
@@ -1418,7 +1427,7 @@ function generateOptionSetsSection(optionSets: OptionSetDefinition[]): string {
     lines.push(heading(3, labelWithSchema(os.displayName || os.name, os.name)));
     lines.push('');
     if (os.description) {
-      lines.push(`> ${os.description}`);
+      lines.push(blockquote(os.description));
       lines.push('');
     }
     lines.push('| Label | Value | Colour | Description |');
@@ -1597,7 +1606,7 @@ function generateProcessesSection(
     lines.push('');
 
     if (proc.description) {
-      lines.push(`> ${mdEscape(proc.description)}`);
+      lines.push(blockquote(proc.description));
       lines.push('');
     }
 

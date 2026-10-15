@@ -9,7 +9,8 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 
 ### Input and solution scope
 
-- Process one or more exported Power Platform solution ZIP files entirely in the local tool runtime.
+- Process one or more exported Power Platform solution ZIP files entirely in the local tool runtime. All documentation and analysis happens on your machine; no solution data is uploaded.
+- The app header shows the running version (`PP-MD - PPTB Edition v#.#.#`), and the **Generate Selected** button stays pinned to the bottom-right of the solution selection page.
 - Browse, search, sort, filter, refresh, and multi-select solutions from the active Power Platform ToolBox Dataverse connection.
 - Filter connected solutions by publisher and managed or unmanaged status.
 - Keep connected collection read-only and scoped to the selected solution components through `solutioncomponent` records.
@@ -34,7 +35,7 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 - View sanitised GitHub Flavored Markdown as rendered content or raw source.
 - Import existing Markdown, search within rendered documents, copy Markdown, and follow generated table-of-contents and Back to Top links.
 - Keep document controls visible above the independently scrolling viewer and adapt toolbar actions into responsive groups on narrow screens.
-- Render Mermaid diagrams lazily, cache completed SVG output, and force outstanding diagrams to finish before PDF generation.
+- Render Mermaid diagrams lazily, then pre-render the rest in the background (top-down, low priority, paused while scrolling, visible diagrams first), cache completed SVG output, and force outstanding diagrams to finish before PDF generation.
 - Yield during large PDF drawing operations so status updates can paint and the interface remains responsive where possible.
 
 ### Export capabilities
@@ -44,6 +45,7 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 - Preserve PDF pagination, headings, paragraphs, lists, tables, code blocks, links, and font-safe replacements for unsupported symbols.
 - Export all Markdown documents, companion diagrams, and optional dependency reports in a ZIP archive.
 - Export documents by category with organized folders for individual and consolidated output.
+- Batch export every generated document as HTML, PDF, or Excel in a single ZIP archive.
 - Use the PPTB file-system bridge in the host and browser downloads during local development, with visible progress retained through the Save-dialog handoff.
 
 ### Security and privacy
@@ -63,7 +65,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.1.6 |
+| version | 1.1.7 |
 | description | Generate structured Markdown documentation from Solution ZIP files or a direct Dataverse connection |
 | icon | icons/pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |
@@ -94,12 +96,14 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 
 The viewer supports rendered Markdown, raw Markdown, in-document search, copy, internal heading navigation, Mermaid diagrams, companion diagram documents, and responsive export menus. The **All Selected Solutions** entry is a full consolidated document, not just a summary.
 
+The **Create Consolidated Document (2+ solutions)** option is on by default. When two or more solutions are selected, PP-MD creates one consolidated document that collates every selected solution. It appears in its own **Consolidated** section at the top of the sidebar, alongside the individual solution documents. Clear the option to create only the individual documents.
+
 ## Export Formats
 
 - **Markdown**: the active document as `.md`.
 - **HTML**: sanitized rendered content as a standalone `.html` file.
 - **PDF**: a valid generated `.pdf` file with headings, tables represented as readable text, pagination, and safe font-compatible text.
-- **Excel**: a styled `.xlsx` workbook with Overview, Tables, Columns, Relationships, Processes, Apps, Integration, Security, and Automation sheets.
+- **Excel**: a styled `.xlsx` workbook with Overview, Tables, Relationships, Processes, Apps, Integration, Security, and Automation sheets, plus one sheet per table (named by the table's display name) listing its columns. Table names on the Tables sheet link to their column sheets, every sheet is sorted alphabetically on its first column, and any document header details you enter appear at the top of the Overview sheet. Each table sheet starts with a `Display Name (schema_name)` title and a **Back to Tables** link, lists Display Name then Schema Name first, and includes lookup targets and option set values. Description columns wrap text.
 - **All Markdown**: a ZIP containing generated documents, companion diagrams, and optional dependency reports.
 - **By Category**: a ZIP containing category folders for individual solutions and the consolidated document.
 

@@ -11,6 +11,20 @@ const emptySolution: ParsedSolution = {
 };
 
 describe('modern artifact Markdown output', () => {
+  it('keeps multi-line column descriptions inside a single table row', () => {
+    const markdown = generateMarkdown({
+      ...emptySolution,
+      entities: [{
+        name: 'new_widget', logicalName: 'new_widget', isCustom: true, relationships: [],
+        attributes: [{ name: 'new_notes', type: 'String', required: false, isCustom: true, description: 'Line one\r\nLine | two\n\nLine three' } as never],
+      }],
+    });
+
+    const row = markdown.split('\n').find((line) => line.includes('new_notes') && line.includes('Line one'));
+    expect(row).toBeDefined();
+    expect(row).toContain('Line one<br>Line \\| two<br>Line three');
+  });
+
   it('documents every modern artifact family with textual state labels', () => {
     const markdown = generateMarkdown({
       ...emptySolution,
@@ -46,9 +60,10 @@ describe('modern artifact Markdown output', () => {
       }],
     });
 
-    [0, 1, 2, 3, 4].forEach((depth) => {
-      expect(markdown).toContain(`ppmd-privilege-${depth}`);
+    ['None', 'User', 'Business Unit', 'Parent Child Business Unit', 'Org'].forEach((label) => {
+      expect(markdown).toContain(label);
     });
+    expect(markdown).not.toMatch(/<span|<table|<strong>/i);
   });
 });
 
@@ -61,7 +76,8 @@ describe('consolidated document navigation and companion diagrams', () => {
       documentContext: { client: 'Contoso', project: 'Migration', contract: '', sow: '', sprint: '', releaseDate: '' },
     });
 
-    expect(markdown).toContain('<strong>Client</strong>');
+    expect(markdown).toContain('| **Client** | Contoso |');
+    expect(markdown).not.toMatch(/<table|<tr|<td|<strong>/i);
     expect(markdown).toContain('Contoso');
     expect(markdown).toContain('## Table of Contents');
     expect(markdown).toContain('[Included Solutions](#included-solutions)');

@@ -53,6 +53,9 @@ import {
 } from './dataverse/solutionService';
 import { useToolboxAPI }     from './hooks/useToolboxAPI';
 import { exportMarkdown, exportZip, exportHtml, exportExcel, exportPdf } from './api/fileManager';
+import { createSolutionWorkbook } from './api/excelExporter';
+import { createRenderedDocumentationPdf } from './api/pdfExporter';
+import { buildStandaloneHtmlDocument, renderMarkdownDocument, svgMarkupToPngDataUrl } from './api/documentRendering';
 import {
   showNotification,
   openExternalUrl,
@@ -77,6 +80,10 @@ interface ProcessingEntry {
 }
 
 /** A fully-processed result */
+type BatchExportFormat = 'html' | 'pdf' | 'xlsx';
+
+const BATCH_EXPORT_LABELS: Record<BatchExportFormat, string> = { html: 'HTML', pdf: 'PDF', xlsx: 'Excel' };
+
 interface SolutionResult {
   solution:  ParsedSolution;
   markdown:  string;
@@ -350,7 +357,7 @@ function buildResultsWithCombinedDocument(
     };
   });
 
-  if (enrichedBase.length > 1) {
+  if (generationPreferences.documentationSettings.createConsolidatedDocument && enrichedBase.length > 1) {
     return [...enrichedBase, buildConsolidatedResult(enrichedBase, generationPreferences, documentContext)];
   }
 
@@ -408,7 +415,8 @@ export default function App() {
   /** List of results (one per successfully processed ZIP) */
   const [results,       setResults]       = useState<SolutionResult[]>([]);
   /** Index of the currently displayed result */
-  const [activeIdx,     setActiveIdx]     = useState<number>(0);
+  const [rawActiveIdx,  setActiveIdx]     = useState<number>(0);
+  const activeIdx = results.length > 0 ? Math.min(rawActiveIdx, results.length - 1) : rawActiveIdx;
   /** Per-file progress tracking (shown during processing) */
   const [processing,    setProcessing]    = useState<ProcessingEntry[]>([]);
   /** Whether any files are currently being processed */
@@ -469,6 +477,7 @@ export default function App() {
   const [includeDependencyReport, setIncludeDependencyReport] = useState<boolean>(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const headerExportMenuRef = useRef<HTMLDetailsElement>(null);
+  const [batchExportFormat, setBatchExportFormat] = useState<BatchExportFormat | null>(null);
   const invalidArchiveOkRef = useRef<HTMLButtonElement | null>(null);
   const markdownImportRef = useRef<HTMLInputElement | null>(null);
 
@@ -873,10 +882,11 @@ export default function App() {
       setActiveIdx(getLastBaseResultIndex(nextResults));
       const count  = newResults.length;
       const failed = sortedFiles.length - count;
+      const consolidatedNote = nextResults.some((r) => r.isConsolidated) ? ' A consolidated "All Selected Solutions" document was also created.' : '';
       setStatusMsg(
-        failed > 0
+        (failed > 0
           ? `Done: ${count} document${count > 1 ? 's' : ''} generated, ${failed} file${failed > 1 ? 's' : ''} failed.`
-          : `Done: ${count} document${count > 1 ? 's' : ''} generated successfully.`,
+          : `Done: ${count} document${count > 1 ? 's' : ''} generated successfully.`) + consolidatedNote,
       );
     } else {
       setStatusMsg('No documents generated. Check that the files are valid Power Platform solution ZIPs.');
@@ -967,7 +977,7 @@ export default function App() {
 
       setResults(nextResults);
       setActiveIdx(getLastBaseResultIndex(nextResults));
-      setStatusMsg(`Documentation generated for ${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'}.`);
+      setStatusMsg(`Documentation generated for ${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'}.${nextResults.some((entry) => entry.isConsolidated) ? ' A consolidated "All Selected Solutions" document was also created.' : ''}`);
       await showNotification(
         'Documentation Ready',
         `${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'} documented.`,
@@ -1187,13 +1197,13 @@ export default function App() {
     if (!result) return;
     const safeName = toSafeMarkdownBaseName(result.solution.metadata.displayName || result.solution.metadata.uniqueName, 'solution');
     try {
-      await exportExcel(result.solution, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`);
+      await exportExcel(result.solution, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`, documentContext);
       await showNotification('Export Successful', 'Excel workbook exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('Excel export failed:', error);
       await showNotification('Export Failed', 'Failed to export Excel workbook.', 'error', 3000);
     }
-  }, [results, activeIdx, showCompanionDiagrams]);
+  }, [results, activeIdx, showCompanionDiagrams, documentContext]);
 
   const handleExportPdf = useCallback(async (markdown: string, renderedTitle: string, diagramImages: ReadonlyArray<string | null>) => {
     const result = results[activeIdx];
@@ -1273,6 +1283,67 @@ export default function App() {
   }, [results, includeDependencyReport, documentContext]);
 
   /**
+   * Exports every generated document (and companion diagram document) in the
+   * chosen rendered format as a single ZIP archive. Rendering happens locally
+   * and documents are processed sequentially to keep the UI responsive.
+   */
+  const handleExportAllRendered = useCallback(async (format: BatchExportFormat) => {
+    if (results.length === 0 || batchExportFormat) return;
+    const label = BATCH_EXPORT_LABELS[format];
+    setBatchExportFormat(format);
+    try {
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
+      const uniqueName = (name: string) => {
+        let candidate = name;
+        for (let n = 2; usedNames.has(candidate.toLowerCase()); n++) candidate = `${name}-${n}`;
+        usedNames.add(candidate.toLowerCase());
+        return candidate;
+      };
+
+      for (const [idx, result] of results.entries()) {
+        const title = result.solution.metadata.displayName || result.solution.metadata.uniqueName;
+        const safeName = toSafeMarkdownBaseName(title, result.isConsolidated ? 'consolidated' : `solution_${idx + 1}`);
+        const baseName = uniqueName(`${safeName}${result.isConsolidated ? '-summary' : '-documentation'}`);
+
+        if (format === 'xlsx') {
+          zip.file(`${baseName}.xlsx`, createSolutionWorkbook(result.solution, documentContext));
+          continue;
+        }
+
+        const documents: Array<{ name: string; title: string; markdown: string }> = [
+          { name: baseName, title: title || 'PP-MD Documentation', markdown: result.markdown },
+        ];
+        if (result.diagramsMarkdown) {
+          documents.push({ name: uniqueName(`${safeName}-diagrams`), title: `${title} - Diagrams`, markdown: result.diagramsMarkdown });
+        }
+
+        for (const doc of documents) {
+          const rendered = await renderMarkdownDocument(doc.markdown, documentationSettings.diagramColourTheme);
+          if (format === 'html') {
+            zip.file(`${doc.name}.html`, buildStandaloneHtmlDocument(doc.title, rendered.bodyHtml));
+          } else {
+            const images: Array<string | null> = [];
+            for (const svg of rendered.diagramSvgs) {
+              images.push(svg ? await svgMarkupToPngDataUrl(svg) : null);
+            }
+            zip.file(`${doc.name}.pdf`, await createRenderedDocumentationPdf(doc.markdown, doc.title, images));
+          }
+        }
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      await exportZip(blob, `pp-md-pptb-edition-${format}-documents`);
+      await showNotification('Export Successful', `All documents exported as ${label} (ZIP).`, 'success', 3000);
+    } catch (error) {
+      console.error(`Batch ${label} export failed:`, error);
+      await showNotification('Export Failed', `Failed to export all documents as ${label}.`, 'error', 3000);
+    } finally {
+      setBatchExportFormat(null);
+    }
+  }, [results, batchExportFormat, documentContext, documentationSettings.diagramColourTheme]);
+
+  /**
    * Exports each solution's documentation split into logically-grouped files
    * plus the consolidated All Selected Solutions document, as a single ZIP
    * archive. Each folder also includes its companion diagrams when present.
@@ -1330,6 +1401,7 @@ export default function App() {
   const canGenerateLocal = launchMode === 'local' && queuedLocalFiles.length > 0 && !isProcessing;
   const canGenerateDataverse = launchMode === 'dataverse' && selectedDataverseSolutionIds.length > 0 && busySolutionIds.length === 0 && !isProcessing;
   const combinedResultIndex = results.findIndex((entry) => entry.isConsolidated);
+
   const activeResult   = results[activeIdx];
   const isWelcome      = launchMode === 'local' && !hasResults && !isProcessing;
   const shouldShowModeSelection = launchMode === null && !hasResults && !isProcessing;
@@ -1401,7 +1473,7 @@ export default function App() {
             <div className={styles.brand}>
               <img src={appIcon} className={styles.brandIcon} alt="" aria-hidden="true" />
               <div className={styles.brandCopy}>
-                <h1 className={styles.brandName}>PP-MD - PPTB Edition</h1>
+                <h1 className={styles.brandName}>PP-MD - PPTB Edition <span className={styles.brandVersion}>v{displayVersion}</span></h1>
                 <span className={styles.brandTagline}>Power Platform Documentation Generator</span>
               </div>
             </div>
@@ -1467,6 +1539,9 @@ export default function App() {
               <div className={styles.headerExportPanel}>
                 <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAll(); }}>All Markdown{includeDependencyReport ? ' + Dependencies' : ''}</button>
                 <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportByCategory(); }}>By Category</button>
+                <button type="button" className={styles.menuBtn} disabled={batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('html'); }}>{batchExportFormat === 'html' ? 'Exporting HTML…' : 'All as HTML (ZIP)'}</button>
+                <button type="button" className={styles.menuBtn} disabled={batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('pdf'); }}>{batchExportFormat === 'pdf' ? 'Exporting PDF…' : 'All as PDF (ZIP)'}</button>
+                <button type="button" className={styles.menuBtn} disabled={batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('xlsx'); }}>{batchExportFormat === 'xlsx' ? 'Exporting Excel…' : 'All as Excel (ZIP)'}</button>
                 <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); setIncludeDependencyReport((enabled) => !enabled); }}>{includeDependencyReport ? 'Disable Dependency Reports' : 'Include Dependency Reports'}</button>
                 {includeDependencyReport && <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportDependencyReport(); }}>Dependency Report</button>}
               </div>
@@ -1546,7 +1621,6 @@ export default function App() {
                   <p className={styles.welcomeSubtitle}>
                     Start with local ZIP files or connect to Dataverse and read solution metadata directly from the active environment.
                   </p>
-                  <p className={styles.modeVersion}>PP-MD - PPTB Edition version {displayVersion}</p>
 
                   <div className={styles.modeGrid}>
                     <button type="button" className={styles.modeCard} onClick={() => handleSelectLaunchMode('local')}>
@@ -1587,7 +1661,7 @@ export default function App() {
                         onClick={handleExternalLinkClick}
                       >
                         <img src={githubMark} className={styles.linkIcon} alt="" aria-hidden="true" />
-                        <span>GitHub Repo</span>
+                        <span>GitHub</span>
                       </a>
                     </div>
                   </section>
@@ -1777,6 +1851,15 @@ export default function App() {
                         />
                         <span>Include Default Columns</span>
                       </label>
+
+                      <label className={styles.generateToggle} title="When two or more solutions are generated, also create a single document that collates all selected solutions.">
+                        <input
+                          type="checkbox"
+                          checked={documentationSettings.createConsolidatedDocument}
+                          onChange={() => handleDocumentationSettingsChange({ createConsolidatedDocument: !documentationSettings.createConsolidatedDocument })}
+                        />
+                        <span>Create Consolidated Document (2+ solutions)</span>
+                      </label>
                     </div>
 
                     <details className={styles.optionDetails} open>
@@ -1845,18 +1928,6 @@ export default function App() {
                       </label>
                       </fieldset>
                     </details>
-
-                    <div className={styles.generateFooter} role="region" aria-label="Generate documentation">
-                      {launchMode === 'local' ? (
-                        <button type="button" className={styles.generatePrimaryBtn} onClick={handleGenerateLocalQueuedSolutions} disabled={!canGenerateLocal}>
-                          Generate Documentation ({queuedLocalFiles.length})
-                        </button>
-                      ) : (
-                        <button type="button" className={styles.generatePrimaryBtn} onClick={handleGenerateSelectedDataverseSolutions} disabled={!canGenerateDataverse}>
-                          Generate Selected ({selectedDataverseSolutionIds.length})
-                        </button>
-                      )}
-                    </div>
                   </section>
 
                   {launchMode === 'local' ? (
@@ -1924,6 +1995,20 @@ export default function App() {
                 </>
               )}
             </section>
+          )}
+
+          {!shouldShowModeSelection && (isWelcome || shouldShowDataverseBrowser) && !isProcessing && (
+            <div className={styles.generateFooter} role="region" aria-label="Generate documentation">
+              {launchMode === 'local' ? (
+                <button type="button" className={styles.generatePrimaryBtn} onClick={handleGenerateLocalQueuedSolutions} disabled={!canGenerateLocal}>
+                  Generate Documentation ({queuedLocalFiles.length})
+                </button>
+              ) : (
+                <button type="button" className={styles.generatePrimaryBtn} onClick={handleGenerateSelectedDataverseSolutions} disabled={!canGenerateDataverse}>
+                  Generate Selected ({selectedDataverseSolutionIds.length})
+                </button>
+              )}
+            </div>
           )}
 
           {/* Processing state */}
@@ -2056,6 +2141,15 @@ export default function App() {
                       />
                       <span>Include Default Columns</span>
                     </label>
+
+                    <label className={styles.generateToggle} title="When two or more solutions are generated, also create a single document that collates all selected solutions.">
+                      <input
+                        type="checkbox"
+                        checked={documentationSettings.createConsolidatedDocument}
+                        onChange={() => handleDocumentationSettingsChange({ createConsolidatedDocument: !documentationSettings.createConsolidatedDocument })}
+                      />
+                      <span>Create Consolidated Document (2+ solutions)</span>
+                    </label>
                   </div>
                 </section>
 
@@ -2144,14 +2238,14 @@ export default function App() {
             onClick={handleExternalLinkClick}
           >
             <img src={githubMark} className={styles.linkIcon} alt="" aria-hidden="true" />
-            <span>GitHub Repo</span>
+            <span>GitHub</span>
           </a>
         </div>
         <div className={styles.footerRight}>
           <span>
             {launchMode === 'dataverse'
               ? 'PP-MD - PPTB Edition reads solution metadata from the active Dataverse environment through Power Platform ToolBox. No information is uploaded to the environment and only solution data is retrieved in read-only mode.'
-              : 'All local ZIP processing happens on your PC; your solution data never leaves your machine.'}
+              : 'All documentation generation and analysis happens on your machine. No solution data is uploaded, stored or shared outside your PC.'}
           </span>
         </div>
       </footer>

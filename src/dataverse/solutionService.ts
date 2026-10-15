@@ -560,9 +560,83 @@ async function getEntityLogicalNamesForSolution(solutionId: string): Promise<str
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
 }
 
-async function buildEntityDefinition(logicalName: string): Promise<EntityDefinition> {
+interface TypedAttributeDetails {
+  lookupTargets: Map<string, string[]>;
+  optionSets: Map<string, Record<string, unknown>>;
+}
+
+const OPTION_SET_ATTRIBUTE_TYPES = [
+  'PicklistAttributeMetadata',
+  'MultiSelectPicklistAttributeMetadata',
+  'StateAttributeMetadata',
+  'StatusAttributeMetadata',
+] as const;
+
+/**
+ * Query a type-cast attribute collection. The base Attributes endpoint cannot
+ * return type-specific properties such as Targets or OptionSet, so these are
+ * fetched separately. Failures are swallowed so analysis still completes.
+ */
+async function queryTypedAttributes(logicalName: string, typeName: string, query: string): Promise<Record<string, unknown>[]> {
+  try {
+    const escaped = logicalName.replace(/'/g, "''");
+    const result = await window.dataverseAPI.queryData(
+      `EntityDefinitions(LogicalName='${escaped}')/Attributes/Microsoft.Dynamics.CRM.${typeName}?${query}`,
+    );
+    return asArray<Record<string, unknown>>(result?.value);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchTypedAttributeDetails(logicalName: string): Promise<TypedAttributeDetails> {
+  const [lookupRows, ...optionSetRows] = await Promise.all([
+    queryTypedAttributes(logicalName, 'LookupAttributeMetadata', '$select=LogicalName,Targets'),
+    ...OPTION_SET_ATTRIBUTE_TYPES.map((typeName) => (
+      queryTypedAttributes(logicalName, typeName, '$select=LogicalName&$expand=OptionSet,GlobalOptionSet($select=Name)')
+    )),
+  ]);
+
+  const lookupTargets = new Map<string, string[]>();
+  for (const row of lookupRows) {
+    const name = asString(row.LogicalName);
+    const targets = asArray<string>(row.Targets).filter(Boolean);
+    if (name && targets.length > 0) lookupTargets.set(name.toLowerCase(), targets);
+  }
+
+  const optionSets = new Map<string, Record<string, unknown>>();
+  for (const row of optionSetRows.flat()) {
+    const name = asString(row.LogicalName);
+    if (!name) continue;
+    const optionSet = (row.OptionSet ?? {}) as Record<string, unknown>;
+    const globalOptionSet = row.GlobalOptionSet as Record<string, unknown> | undefined;
+    optionSets.set(name.toLowerCase(), {
+      ...optionSet,
+      Name: asString(optionSet.Name) || asString(globalOptionSet?.Name) || undefined,
+    });
+  }
+
+  return { lookupTargets, optionSets };
+}
+
+/** Build a map of lookup attribute -> referenced tables from ManyToOne relationships. */
+function lookupTargetsFromRelationships(logicalName: string, manyToOne: Record<string, unknown>[]): Map<string, string[]> {
+  const targets = new Map<string, string[]>();
+  for (const relationship of manyToOne) {
+    if (asString(relationship.ReferencingEntity).toLowerCase() !== logicalName.toLowerCase()) continue;
+    const attribute = asString(relationship.ReferencingAttribute).toLowerCase();
+    const referenced = asString(relationship.ReferencedEntity);
+    if (!attribute || !referenced) continue;
+    const existing = targets.get(attribute) ?? [];
+    if (!existing.includes(referenced)) existing.push(referenced);
+    targets.set(attribute, existing);
+  }
+  return targets;
+}
+
+export async function buildEntityDefinition(logicalName: string): Promise<EntityDefinition> {
   const metadata = await window.dataverseAPI.getEntityMetadata(logicalName, true, [...ENTITY_PROPERTIES]);
-  const [attributesResponse, oneToManyResponse, manyToOneResponse, manyToManyResponse] = await Promise.all([
+  const [attributesResponse, oneToManyResponse, manyToOneResponse, manyToManyResponse, typedDetails] = await Promise.all([
     // Only request properties that are valid for base AttributeMetadata.
     // Type-specific properties (for example MaxLength on StringAttributeMetadata)
     // can break this endpoint when requested against the base type.
@@ -600,12 +674,23 @@ async function buildEntityDefinition(logicalName: string): Promise<EntityDefinit
       'Entity2LogicalName',
       'IntersectEntityName',
     ]),
+    fetchTypedAttributeDetails(logicalName),
   ]);
 
+  const relationshipLookupTargets = lookupTargetsFromRelationships(
+    logicalName,
+    asArray<Record<string, unknown>>(manyToOneResponse.value),
+  );
+
   const attributes = asArray<Record<string, unknown>>(attributesResponse.value).map((attribute): EntityAttribute => {
-    const optionSet = attribute.OptionSet as Record<string, unknown> | undefined;
+    const attributeKey = asString(attribute.LogicalName).toLowerCase();
+    const optionSet = (attribute.OptionSet as Record<string, unknown> | undefined)
+      ?? typedDetails.optionSets.get(attributeKey);
     const options = asArray<Record<string, unknown>>(optionSet?.Options).map(optionLabel);
-    const targets = asArray<string>(attribute.Targets);
+    const directTargets = asArray<string>(attribute.Targets);
+    const targets = directTargets.length > 0
+      ? directTargets
+      : typedDetails.lookupTargets.get(attributeKey) ?? relationshipLookupTargets.get(attributeKey) ?? [];
     const requiredValue = asString((attribute.RequiredLevel as { Value?: string } | undefined)?.Value);
     const maxLength =
       asNumber(attribute.MaxLength)
@@ -626,7 +711,7 @@ async function buildEntityDefinition(logicalName: string): Promise<EntityDefinit
       auditing: asBoolean(attribute.IsAuditEnabled),
       maxLength,
       precision,
-      lookupTarget: targets[0],
+      lookupTarget: targets.length > 0 ? targets.join(', ') : undefined,
       options: options.length > 0 ? options : undefined,
       optionSetName: asString(optionSet?.Name) || undefined,
       isCustom: asBoolean(attribute.IsCustomAttribute, true),

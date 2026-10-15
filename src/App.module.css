@@ -321,12 +321,6 @@
   max-width: 680px;
 }
 
-.modeVersion {
-  margin: -0.75rem 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
-}
-
 .dropZoneWrapper {
   width: 100%;
 }
@@ -655,15 +649,19 @@
   background: var(--color-surface);
 }
 
+/* Pinned to the bottom-right of the selection page scroll area (direct child of .main). */
 .generateFooter {
   position: sticky;
-  bottom: 0;
-  z-index: 3;
+  bottom: -1.5rem; /* offset .main padding so the bar sits flush with the bottom edge */
+  z-index: 5;
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
-  padding: 0.75rem 0;
+  margin: auto -1.5rem -1.5rem;
+  padding: 0.75rem 1.5rem;
   background: var(--color-surface);
   border-top: 1px solid var(--color-border);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.06);
 }
 
 .documentScope legend {
@@ -1026,6 +1024,14 @@
   margin-left: auto;
   text-align: right;
   max-width: min(60%, 880px);
+}
+
+.brandVersion {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0;
+  margin-left: 0.25rem;
 }
 
 .footerVersion {

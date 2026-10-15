@@ -10,10 +10,18 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeSanitize from 'rehype-sanitize';
 import { MermaidDiagram, forceRenderAllMountedDiagrams } from './MermaidDiagram';
 import { ProgressBar } from './ProgressBar';
 import styles from './MarkdownViewer.module.css';
+import {
+  buildStandaloneHtmlDocument,
+  markdownSanitizationSchema,
+  slugifyHeading,
+  svgToPngDataUrl,
+} from '../../api/documentRendering';
+
+export { extractText, slugifyHeading } from '../../api/documentRendering';
 
 export interface MarkdownViewerProps {
   markdown: string;
@@ -30,108 +38,6 @@ export interface MarkdownViewerProps {
 type HeadingRendererProps = ComponentPropsWithoutRef<'h1'> & { children?: ReactNode };
 
 /**
- * Wraps already-rendered, sanitized documentation markup in a standalone,
- * self-contained HTML document (embedded styles, no external requests) so it
- * can be opened directly in any browser outside of PP-MD.
- */
-function buildStandaloneHtmlDocument(title: string, bodyHtml: string): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>${title}</title>
-<style>
-  :root { color-scheme: light; }
-  body { font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.6; max-width: 68rem; margin: 0 auto; padding: 2rem; background: #ffffff; color: #1a1a2e; }
-  h1, h2, h3, h4 { line-height: 1.25; margin: 1.5em 0 0.5em; }
-  table { border-collapse: collapse; width: 100%; margin: 1em 0; overflow-x: auto; display: block; }
-  th, td { border: 1px solid #c1c4ce; padding: 0.4em 0.6em; text-align: left; }
-  th { background: #f0f2f5; }
-  code { font-family: 'Cascadia Code', 'Consolas', monospace; background: #f4f4f8; padding: 0.1em 0.4em; border-radius: 4px; }
-  pre { background: #f4f4f8; border: 1px solid #d0d3db; border-radius: 8px; padding: 1rem; overflow-x: auto; }
-  svg { max-width: 100%; height: auto; }
-  a { color: #2563eb; }
-</style>
-</head>
-<body>
-${bodyHtml}
-</body>
-</html>`;
-}
-
-/** Permit only PP-MD's generated, non-scriptable badge classes in Markdown. */
-const markdownSanitizationSchema = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    span: [...(defaultSchema.attributes?.span ?? []), ['className', /^ppmd-(privilege|permission)(-|$)/]],
-  },
-};
-
-const MAX_DIAGRAM_RASTER_DIMENSION = 4000;
-
-/**
- * Rasterizes a rendered Mermaid `<svg>` into a PNG data URL so it can be
- * embedded in the PDF export (jsPDF cannot draw arbitrary SVG markup
- * directly). Returns null on any failure so the caller can fall back to
- * rendering the diagram's raw source as text instead.
- */
-async function svgToPngDataUrl(svgEl: SVGSVGElement): Promise<string | null> {
-  try {
-    const clone = svgEl.cloneNode(true) as SVGSVGElement;
-    const viewBox = clone.getAttribute('viewBox')?.trim().split(/\s+/).map(Number);
-    const width = viewBox && viewBox.length === 4 && viewBox[2] > 0 ? viewBox[2] : (clone.clientWidth || 800);
-    const height = viewBox && viewBox.length === 4 && viewBox[3] > 0 ? viewBox[3] : (clone.clientHeight || 600);
-
-    const svgNs = 'http://www.w3.org/2000/svg';
-    const background = document.createElementNS(svgNs, 'rect');
-    background.setAttribute('x', '0');
-    background.setAttribute('y', '0');
-    background.setAttribute('width', String(width));
-    background.setAttribute('height', String(height));
-    background.setAttribute('fill', '#ffffff');
-    clone.insertBefore(background, clone.firstChild);
-    clone.setAttribute('width', String(width));
-    clone.setAttribute('height', String(height));
-
-    const svgString = new XMLSerializer().serializeToString(clone);
-    const svgUrl = URL.createObjectURL(new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' }));
-
-    let scale = 2;
-    if (width * scale > MAX_DIAGRAM_RASTER_DIMENSION) scale = MAX_DIAGRAM_RASTER_DIMENSION / width;
-    if (height * scale > MAX_DIAGRAM_RASTER_DIMENSION) scale = Math.min(scale, MAX_DIAGRAM_RASTER_DIMENSION / height);
-    scale = Math.max(scale, 0.25);
-
-    try {
-      const image = new Image();
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        image.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(width * scale));
-          canvas.height = Math.max(1, Math.round(height * scale));
-          const context = canvas.getContext('2d');
-          if (!context) {
-            reject(new Error('Canvas 2D context unavailable'));
-            return;
-          }
-          context.scale(scale, scale);
-          context.drawImage(image, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/png'));
-        };
-        image.onerror = () => reject(new Error('Failed to rasterize diagram SVG'));
-        image.src = svgUrl;
-      });
-      return dataUrl;
-    } finally {
-      URL.revokeObjectURL(svgUrl);
-    }
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Collects every rendered Mermaid diagram inside the given container, in
  * document order, converting each to a PNG data URL for PDF export. Diagrams
  * that failed to render (no `<svg>` present) produce `null` at their index so
@@ -145,30 +51,6 @@ async function collectDiagramImages(container: HTMLElement): Promise<Array<strin
     images.push(svg ? await svgToPngDataUrl(svg) : null);
   }
   return images;
-}
-
-/**
- * Extract plain text from nested React nodes so markdown headings can be
- * normalized into stable in-document anchors.
- */
-export function extractText(node: ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join(' ');
-  if (node && typeof node === 'object' && 'props' in node) {
-    return extractText((node as { props?: { children?: ReactNode } }).props?.children);
-  }
-  return '';
-}
-
-/**
- * Convert heading node content into a URL-safe slug used as the heading id.
- */
-export function slugifyHeading(children: ReactNode): string {
-  return extractText(children)
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-') || 'section';
 }
 
 function waitForBrowserPaint(): Promise<void> {

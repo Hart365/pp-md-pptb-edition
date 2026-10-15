@@ -238,23 +238,6 @@
   color: #ffffff;
 }
 
-/* Generated Markdown uses classes so sanitisation can remain strict. */
-.content :global(.ppmd-privilege) {
-  display: inline-block;
-  padding: 0.15rem 0.5rem;
-  border-radius: 0.4rem;
-  color: #1f2937;
-  font-weight: 600;
-}
-
-.content :global(.ppmd-privilege-0),
-.content :global(.ppmd-permission-denied) { background: #fee2e2; }
-.content :global(.ppmd-privilege-1) { background: #fef9c3; }
-.content :global(.ppmd-privilege-2) { background: #dbeafe; }
-.content :global(.ppmd-privilege-3) { background: #ede9fe; }
-.content :global(.ppmd-privilege-4),
-.content :global(.ppmd-permission-allowed) { background: #dcfce7; }
-
 /* ── Copy toast ───────────────────────────────────────────────────────── */
 .copyToast {
   padding: 0.4rem 1rem;

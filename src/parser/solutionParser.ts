@@ -256,6 +256,64 @@ function xmlStr(obj: Record<string, unknown>, key: string, fallback = ''): strin
   return String(val);
 }
 
+/**
+ * Extracts lookup target entity names from the various shapes a `<Targets>`
+ * node can take after XML parsing (plain string, `<Target>` children, arrays).
+ */
+export function readLookupTargets(value: unknown): string[] {
+  const results: string[] = [];
+  const visit = (node: unknown): void => {
+    if (node === undefined || node === null) return;
+    if (typeof node === 'string' || typeof node === 'number') {
+      String(node)
+        .split(/[,;\s]+/)
+        .map((part) => part.trim().toLowerCase())
+        .filter(Boolean)
+        .forEach((part) => results.push(part));
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node === 'object') {
+      const obj = node as Record<string, unknown>;
+      visit(obj['Target'] ?? obj['target'] ?? obj['#text'] ?? obj['@_Name'] ?? obj['Name']);
+    }
+  };
+  visit(value);
+  return Array.from(new Set(results));
+}
+
+/**
+ * Fills in missing lookup targets using the relationship metadata parsed for
+ * every entity (the referencing attribute of a relationship is the lookup).
+ */
+export function fillLookupTargetsFromRelationships(entities: EntityDefinition[]): void {
+  const targetsByAttribute = new Map<string, Set<string>>();
+  entities.forEach((entity) => {
+    entity.relationships.forEach((rel) => {
+      if (!rel.referencingAttribute || !rel.referencedEntity || !rel.referencingEntity) return;
+      if (rel.type === 'ManyToMany') return;
+      const key = `${rel.referencingEntity.toLowerCase()}|${rel.referencingAttribute.toLowerCase()}`;
+      const set = targetsByAttribute.get(key) ?? new Set<string>();
+      set.add(rel.referencedEntity.toLowerCase());
+      targetsByAttribute.set(key, set);
+    });
+  });
+
+  const lookupTypes = new Set<string>([AttributeType.Lookup, AttributeType.Owner, AttributeType.Customer]);
+  entities.forEach((entity) => {
+    entity.attributes.forEach((attribute) => {
+      if (attribute.lookupTarget || !lookupTypes.has(attribute.type)) return;
+      const targets = targetsByAttribute.get(`${entity.logicalName.toLowerCase()}|${attribute.name.toLowerCase()}`);
+      if (targets && targets.size > 0) {
+        attribute.lookupTarget = Array.from(targets).sort().join(', ');
+      }
+    });
+  });
+}
+
 function firstObject(value: unknown): Record<string, unknown> | undefined {
   if (!value) return undefined;
   if (Array.isArray(value)) {
@@ -729,14 +787,18 @@ function parseEntityNode(
       if (attrType !== AttributeType.Lookup && attrType !== AttributeType.Owner && attrType !== AttributeType.Customer) {
         return undefined;
       }
-      const targets = (a['Targets'] ?? a['targets'] ?? '') as string;
-      return targets || undefined;
+      const targets = readLookupTargets(a['Targets'] ?? a['targets'] ?? a['LookupTargets']);
+      return targets.length > 0 ? targets.join(', ') : undefined;
     })();
 
     const osName: string | undefined = (() => {
-      const osRef = a['OptionSet'] as Record<string, unknown> | undefined;
+      const direct = xmlStr(a, 'OptionSetName') || xmlStr(a, 'optionsetname') || xmlStr(a, '@_OptionSetName');
+      if (direct) return direct;
+      const rawOs = a['OptionSet'] ?? a['optionset'];
+      if (typeof rawOs === 'string' && rawOs.trim()) return rawOs.trim();
+      const osRef = firstObject(rawOs);
       if (!osRef) return undefined;
-      return xmlStr(osRef, '@_Name') || xmlStr(osRef, 'Name') || undefined;
+      return xmlStr(osRef, '@_Name') || xmlStr(osRef, 'Name') || xmlStr(osRef, '@_name') || undefined;
     })();
 
     const attrDisplayName = getLocalizedLabel(a, attrName);
@@ -1466,6 +1528,7 @@ export async function parseSolutionZip(
     // Some solution exports represent relationships only at the root level
     // via <EntityRelationships><EntityRelationship .../></EntityRelationships>.
     mergeRootEntityRelationships(root, entities);
+    fillLookupTargetsFromRelationships(entities);
 
     // ── Global OptionSets ─────────────────────────────────────────────────
     report(30);

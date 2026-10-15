@@ -145,6 +145,10 @@ function flattenInline(nodes: PhrasingContent[] | undefined, base: Style = {}): 
         tokens.push({ text: '', style: base, break: true });
         break;
       case 'html':
+        if (/^<br\s*\/?>$/i.test(((node as Html).value ?? '').trim())) {
+          tokens.push({ text: '', style: base, break: true });
+          break;
+        }
         tokens.push({ text: sanitizePdfText(stripTags((node as Html).value ?? '')), style: base });
         break;
       default: {

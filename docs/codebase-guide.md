@@ -37,7 +37,8 @@ flowchart LR
 
 - `src/api/toolboxAPI.ts` wraps PPTB settings, notifications, connection access, clipboard, external browser, file-system, and Dataverse APIs.
 - `src/api/fileManager.ts` provides typed export functions and routes downloads through PPTB when available, with browser fallbacks for local development.
-- `src/api/excelExporter.ts` creates styled XLSX workbooks with overview, table, column, relationship, process, app, integration, security, and automation sheets.
+- `src/api/excelExporter.ts` creates styled XLSX workbooks with overview (including optional document header details), table, relationship, process, app, integration, security, and automation sheets, plus one column sheet per table hyperlinked from the Tables sheet (each with a `Display Name (schema)` title row, a back link to Tables, and lookup target / option set columns). All sheet rows are sorted alphabetically on the first column and Description columns wrap.
+- `src/api/documentRendering.tsx` holds shared Markdown sanitisation, heading slugs, standalone HTML building, SVG-to-PNG conversion, and `renderMarkdownDocument`, which renders Markdown plus Mermaid diagrams off-screen for the batch HTML/PDF ZIP export in `App.tsx`.
 - `src/api/pdfExporter.ts` builds a genuine text-based, searchable PDF directly from the generated Markdown (parsed via `unified`/`remark-parse`/`remark-gfm`) using `jsPDF`'s text/table/image drawing APIs — not a screenshot of the rendered view. Mermaid diagrams are embedded as pre-rendered PNGs supplied by `MarkdownViewer`; everything else (headings, paragraphs, lists, tables, code, links) is drawn as real vector text. Unicode symbols outside jsPDF's WinAnsi font range are swapped for ASCII equivalents (`sanitizePdfText`).
 
 ### Data model and collectors
