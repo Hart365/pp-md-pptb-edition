@@ -119,14 +119,14 @@ Exit criteria: each retained export works through PPTB APIs and has a documented
 3. Add token contrast checks for all themes, build, PPTB manifest validation and a connected-mode smoke fixture.
 4. Increment the tool version only when an implementation phase changes shipped behaviour; document each release delta in the README and design docs.
 
-### Current Release Status (1.1.7)
+### Current Release Status (1.1.8)
 
 - Completed: solution-scoped connected collection, modern artifact coverage, dependency reporting, explicit Dataverse collection policies, ToolBox-backed preset persistence, Markdown import/search, companion diagrams, sanitised rendering, and the automated contrast audit.
 - Completed: TypeScript, lint, offline package validation, unit tests, contrast checks, and production build are wired into the standard `npm test` command.
 - Host verification still required: Playwright/axe checks inside the PPTB iframe, screen-reader spot checks, 320 CSS pixel reflow, and forced-colours behaviour. These cannot be proven by the current repository runner because it has no PPTB host or browser automation dependency.
 - Completed: searchable text-based PDF, styled XLSX, HTML, Markdown, and grouped ZIP exports use the documented ToolBox file-system bridge.
 - Completed in 1.1.7: classic IIFE bundle for PPTB launch, consolidated multi-solution document, GitHub-flavoured Markdown output, per-table XLSX worksheets with navigation links and populated lookup targets/option sets, batch export of all documents as PDF/HTML/XLSX, and idle low-priority Mermaid rendering.
-- Out of scope by design: secure configuration values, credentials, and environment-wide metadata as implicit solution documentation.
+- Completed in 1.1.8: all libraries moved to `devDependencies` because `dist` is fully bundled, so npm installs no runtime dependencies. The PPTB `spawn EINVAL` npm install failure and the blank SVG mask icon are host-side issues reported upstream.- Out of scope by design: secure configuration values, credentials, and environment-wide metadata as implicit solution documentation.
 
 ## Efficiency Principles
 

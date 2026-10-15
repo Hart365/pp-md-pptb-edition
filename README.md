@@ -65,7 +65,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.1.7 |
+| version | 1.1.8 |
 | description | Generate structured Markdown documentation from Solution ZIP files or a direct Dataverse connection |
 | icon | icons/pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |
@@ -199,6 +199,8 @@ Commands:
 6. Install `@hart365/pp-md-pptb-edition` through PPTB **Debug > Install from npm** and complete a published-package smoke test.
 7. Submit the npm package through the Power Platform ToolBox tool-submission form.
 
+All libraries are bundled into `dist` at build time, so the published package declares no runtime `dependencies`; installing it from npm does not download any additional packages.
+
 The package intentionally declares `api.github.com` as an optional CSP connection used only for update checks. Core documentation generation remains available when that endpoint is unavailable.
 
 ## Security And Privacy
@@ -212,6 +214,8 @@ The package intentionally declares `api.github.com` as an optional CSP connectio
 
 ## Troubleshooting
 
+- **Installation Failed: spawn EINVAL** when installing from npm in PPTB on Windows: this is a Power Platform ToolBox host issue (`npm.cmd` is launched without a shell on Node.js 18.20.2 or later). Until PPTB is updated, install the tool from the PPTB marketplace, or extract the npm tarball and load its `package` folder through **Debug > Load Local Tool**.
+- **Tool icon blank in Installed Tools**: PPTB renders SVG icons through a CSS mask that its `pptb-webview` protocol blocks under CORS. PPTB only accepts SVG icons, so this is resolved in the host rather than in the tool.
 - **Optional connected artifact warnings**: some Dataverse environments do not expose every modern-artifact endpoint. Those capabilities are treated as unavailable and do not prevent the rest of the solution from being documented.
 - **Large documents**: Mermaid diagrams are automatically moved to a companion document when the generated document is large or structurally complex.
 - **PPTB downloads**: exports use the ToolBox file-system bridge inside PPTB and browser downloads during local development.
