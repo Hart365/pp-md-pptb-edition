@@ -38,6 +38,8 @@ import type {
 } from '../types/solution';
 
 import { ProcessCategory, WebResourceType, AttributeType, AppType } from '../types/solution';
+import { availableTableMetadataBlocks } from './tableMetadata';
+import { collectMissingDependencies, missingDependenciesNotice, MISSING_DEPENDENCIES_NOTE } from './missingDependencies';
 
 export interface MarkdownGenerationOptions {
   erdMode?: 'compact' | 'detailed-relationships';
@@ -73,6 +75,7 @@ export interface DocumentationSecurityRoleFilters {
 }
 
 export interface DocumentationSettings {
+  generateMissingDependencies: boolean;
   metadata: DocumentationMetadataSettings;
   securityRoleFilters: DocumentationSecurityRoleFilters;
   separateDiagramsDocument: boolean;
@@ -85,6 +88,7 @@ export interface DocumentationSettings {
 export type MermaidColourTheme = 'neutral' | 'default' | 'dark' | 'forest' | 'base';
 
 export const DEFAULT_DOCUMENTATION_SETTINGS: DocumentationSettings = {
+  generateMissingDependencies: false,
   metadata: { includeDefaultColumns: true, excludeVirtualAttributes: false, attributeSelectionMode: 'all', manualAttributes: [], includeTypeColumn: true, includeRequiredLevelInfo: true, includeCustomColumn: true, includeAuditInfo: true, includeNotesColumn: true, includeDescriptionColumn: true, includeAdvancedFind: false, includeFieldSecurity: false, includeMetadataSource: false },
   securityRoleFilters: { onlyTablesInCurrentSolution: false, onlyCustomTables: false },
   separateDiagramsDocument: false,
@@ -624,6 +628,14 @@ export function consolidateSolutions(solutions: ParsedSolution[]): ParsedSolutio
       isManaged: false,
     },
     entities,
+    missingDependencies: items.every((solution) => solution.missingDependencies !== undefined)
+      || items.some((solution) => (solution.missingDependencies?.length ?? 0) > 0)
+      ? items.flatMap((solution) => collectMissingDependencies(solution)) : undefined,
+    dependencySolutionUniqueNames: items.flatMap((solution) => solution.dependencySolutionUniqueNames ?? [solution.metadata.uniqueName]),
+    missingDependenciesError: items.flatMap((solution) => {
+      const notice = missingDependenciesNotice(solution);
+      return notice ? [`${solution.metadata.uniqueName}: ${notice}`] : [];
+    }).join('\n') || undefined,
     optionSets,
     forms,
     views,
@@ -874,12 +886,12 @@ function generateCollectionPolicyLine(collectionPolicy?: SolutionCollectionPolic
 }
 
 /** Describes where a table's metadata originated, for the optional "Metadata Source" property row. */
-function entitySourceLabel(options: MarkdownGenerationOptions): string {
+function entitySourceLabel(entity: EntityDefinition, options: MarkdownGenerationOptions): string {
   const indicators = options.enrichmentIndicators;
-  if (!indicators) return 'ZIP Export';
-  const sources: string[] = ['ZIP Export'];
-  if (indicators.peerGapFillApplied) sources.push('Peer Gap Fill');
-  if (indicators.dataverseMetadataEnriched) sources.push('Dataverse Enrichment');
+  const sources: string[] = [entity.metadataSource === 'dataverse' ? 'Dataverse Connected'
+    : entity.metadataSource === 'local' ? 'ZIP Export' : 'Unknown'];
+  if (indicators?.peerGapFillApplied) sources.push('Peer Gap Fill');
+  if (indicators?.dataverseMetadataEnriched) sources.push('Dataverse Enrichment');
   return sources.join(' + ');
 }
 
@@ -982,6 +994,7 @@ function generateTableOfContents(solution: ParsedSolution, options: MarkdownGene
     { label: 'Reports & Dashboards',           count: includeScope(options, 'reports') ? solution.reports.length + solution.dashboards.length : 0 },
     { label: 'Plugin Assemblies & Steps',      count: includeScope(options, 'plugins') ? solution.pluginAssemblies.length : 0 },
     { label: 'Dataverse Deep Insights',        count: dataverseInsightsCount },
+    { label: 'Missing Dependencies',           count: documentationSettings(options).generateMissingDependencies ? 1 : 0 },
   ];
 
   sections.forEach(({ label, count }) => {
@@ -1254,6 +1267,10 @@ function generateEntitiesSection(
     lines.push('');
 
     // Entity metadata
+    const metadataBlocks = availableTableMetadataBlocks(entity);
+    const [generalBlock, ...propertyBlocks] = metadataBlocks[0]?.heading === 'General'
+      ? metadataBlocks
+      : [undefined, ...metadataBlocks];
     lines.push('| Property | Value |');
     lines.push('|----------|-------|');
     lines.push(`| **Logical Name** | \`${entity.logicalName}\` |`);
@@ -1263,18 +1280,27 @@ function generateEntitiesSection(
     if (entity.objectTypeCode) {
       lines.push(`| **Object Type Code** | ${entity.objectTypeCode} |`);
     }
-    lines.push(`| **Ownership** | ${entity.ownershipType ?? 'User'} |`);
-    lines.push(`| **Custom** | ${entity.isCustom ? 'Yes' : 'No'} |`);
-    if (entity.primaryAttributeName) {
-      lines.push(`| **Primary Attribute** | \`${entity.primaryAttributeName}\` |`);
+    for (const [label, value] of generalBlock?.items ?? []) {
+      if (label === 'Schema name' || label === 'Display name') continue;
+      if (label === 'Description' && !entity.description?.trim()) continue;
+      lines.push(`| **${mdEscape(label)}** | ${mdEscape(value)} |`);
     }
-    if (entity.isActivity) lines.push(`| **Activity** | Yes |`);
-    if (entity.changeTracking) lines.push(`| **Change Tracking** | Enabled |`);
-    if (entity.description) lines.push(`| **Description** | ${mdEscape(entity.description)} |`);
     if (settings.metadata.includeMetadataSource) {
-      lines.push(`| **Metadata Source** | ${entitySourceLabel(options)} |`);
+      lines.push(`| **Metadata Source** | ${entitySourceLabel(entity, options)} |`);
     }
     lines.push('');
+
+    for (const block of propertyBlocks) {
+      if (!block) continue;
+      lines.push(`**${mdEscape(block.heading)}**`);
+      lines.push('');
+      lines.push('| Setting | Value |');
+      lines.push('|---------|-------|');
+      for (const [label, value] of block.items) {
+        lines.push(`| ${mdEscape(label)} | ${mdEscape(value)} |`);
+      }
+      lines.push('');
+    }
 
     // Columns
     if (documentedAttributes.length > 0) {
@@ -2564,6 +2590,22 @@ function generateWarningsSection(warnings: string[]): string {
 // Public API
 // ---------------------------------------------------------------------------
 
+function generateMissingDependenciesSection(solution: ParsedSolution): string {
+  const dependencies = collectMissingDependencies(solution);
+  const lines = [heading(2, 'Missing Dependencies'), '', MISSING_DEPENDENCIES_NOTE, ''];
+  const notice = missingDependenciesNotice(solution);
+  if (notice) lines.push(blockquote(`Dependency report incomplete: ${notice}`), '');
+  if (dependencies.length === 0 && !notice) {
+    lines.push('_No missing installation/import prerequisites were declared for this solution._', '');
+  } else if (dependencies.length > 0) {
+    lines.push('| Dependent Item | Item Type | Required Component | Required Type | Related Tables | Solution |');
+    lines.push('|----------------|-----------|--------------------|---------------|----------------|----------|');
+    dependencies.forEach((dependency) => lines.push(`| ${mdEscape(dependency.dependentName)} | ${mdEscape(dependency.dependentType)} | ${mdEscape(dependency.requiredParent ? `${dependency.requiredParent}.${dependency.requiredName}` : dependency.requiredName)} | ${mdEscape(dependency.requiredType)} | ${mdEscape(dependency.tableLogicalNames.join(', ')) || '–'} | ${mdEscape(dependency.solutionUniqueName)} |`));
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 /**
  * Generates complete Markdown documentation for a parsed Power Platform solution.
  * This is the primary public function of this module.
@@ -2596,6 +2638,7 @@ export function generateMarkdown(
     includeScope(options, 'plugins') ? generatePluginsSection(solution.pluginAssemblies) : '',
     generateDataverseInsightsSection(solution, entityMap),
     generateWarningsSection(solution.warnings),
+    documentationSettings(options).generateMissingDependencies ? generateMissingDependenciesSection(solution) : '',
   ];
 
   // Filter out empty sections and join
@@ -2622,7 +2665,7 @@ const CATEGORY_DEFINITIONS: Array<{ key: string; title: string; headings: string
   { key: 'automation-and-processes', title: 'Automation & Processes', headings: ['Processes & Automation', 'Desktop Flows', 'Dataflows', 'Custom APIs', 'Offline Profiles'] },
   { key: 'plugins', title: 'Plugins & Plugin Steps', headings: ['Plugin Assemblies & Steps'] },
   { key: 'security-and-integration', title: 'Security & Integration', headings: ['Security Roles', 'Column Level Security Profiles', 'Connection References', 'Connections', 'Environment Variables', 'Email Templates', 'SharePoint Data Sources'] },
-  { key: 'reports-and-insights', title: 'Web Resources, Reports & Insights', headings: ['Web Resources', 'Reports & Dashboards', 'Dataverse Deep Insights', '⚠️ Parse Warnings'] },
+  { key: 'reports-and-insights', title: 'Web Resources, Reports & Insights', headings: ['Web Resources', 'Reports & Dashboards', 'Dataverse Deep Insights', '⚠️ Parse Warnings', 'Missing Dependencies'] },
 ];
 
 /**
@@ -2872,6 +2915,9 @@ export function generateConsolidatedMarkdown(
   });
   lines.push('');
 
+  if (documentationSettings(options).generateMissingDependencies) {
+    lines.push(generateMissingDependenciesSection(consolidated));
+  }
   const body = lines.join('\n');
   const tocHeadings = [...body.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
   const toc = [

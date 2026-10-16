@@ -16,6 +16,7 @@
 
 import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
+import { dependencyComponentType } from '../generator/missingDependencies';
 
 import type {
   ParsedSolution,
@@ -48,6 +49,7 @@ import type {
   DataflowDefinition,
   CustomAPIDefinition,
   OfflineProfileDefinition,
+  MissingDependency,
 } from '../types/solution';
 
 import {
@@ -314,6 +316,31 @@ export function fillLookupTargetsFromRelationships(entities: EntityDefinition[])
   });
 }
 
+/**
+ * Reads a boolean flag from an XML node. Solution exports use `1`/`0`, older
+ * shapes use `true`/`false`, and managed properties wrap the value in
+ * `<X><Value>…</Value></X>` or `Value="…"`. Returns undefined when absent.
+ */
+export function xmlBool(node: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    for (const k of [key, `@_${key}`]) {
+      const raw = node[k];
+      if (raw === undefined || raw === null || raw === '') continue;
+      let text: string;
+      if (typeof raw === 'object' && !Array.isArray(raw)) {
+        const obj = raw as Record<string, unknown>;
+        text = xmlStr(obj, '@_Value') || xmlStr(obj, 'Value') || xmlStr(obj, '#text');
+      } else {
+        text = xmlStr(node, k);
+      }
+      const normalized = text.trim().toLowerCase();
+      if (normalized === '1' || normalized === 'true') return true;
+      if (normalized === '0' || normalized === 'false') return false;
+    }
+  }
+  return undefined;
+}
+
 function firstObject(value: unknown): Record<string, unknown> | undefined {
   if (!value) return undefined;
   if (Array.isArray(value)) {
@@ -547,12 +574,35 @@ export const COMPONENT_TYPE_MAP: Record<number, string> = {
 // solution.xml parsing
 // ---------------------------------------------------------------------------
 
-/**
- * Parses the root solution.xml file and returns {@link SolutionMetadata}.
- *
- * @param xml - Raw XML string from solution.xml
- * @returns Parsed metadata
- */
+/** Reads external dependencies explicitly declared in the solution ZIP manifest. */
+export function parseManifestMissingDependencies(xml: string): MissingDependency[] {
+  const doc = xmlParser.parse(xml) as Record<string, unknown>;
+  const root = (doc['ImportExportXml'] ?? doc) as Record<string, unknown>;
+  const manifest = (root['SolutionManifest'] ?? root) as Record<string, unknown>;
+  const missing = (manifest['MissingDependencies'] ?? {}) as Record<string, unknown>;
+  const nodes = missing['MissingDependency'];
+  const dependencies = nodes ? (Array.isArray(nodes) ? nodes : [nodes]) : [];
+  return dependencies.map((node) => {
+    const dependency = node as Record<string, unknown>;
+    const required = (dependency['Required'] ?? {}) as Record<string, unknown>;
+    const dependent = (dependency['Dependent'] ?? {}) as Record<string, unknown>;
+    const name = (item: Record<string, unknown>) => xmlStr(item, '@_schemaName') || xmlStr(item, '@_displayName') || xmlStr(item, '@_id');
+    const type = (item: Record<string, unknown>) => xmlStr(item, '@_type')
+      ? dependencyComponentType(Number(xmlStr(item, '@_type'))) : 'Component (unknown type)';
+    const dependentType = type(dependent);
+    const parent = xmlStr(dependent, '@_parentSchemaName');
+    return {
+      dependentName: parent ? `${parent}.${name(dependent)}` : name(dependent),
+      dependentType,
+      requiredName: name(required),
+      requiredType: type(required),
+      requiredParent: xmlStr(required, '@_parentSchemaName') || undefined,
+      tableLogicalNames: parent ? [parent] : dependentType === 'Table' ? [name(dependent)] : [],
+    };
+  }).filter((dependency) => dependency.requiredName && dependency.dependentName);
+}
+
+/** Parses solution and publisher metadata from the root solution.xml file. */
 function parseSolutionMetadata(xml: string): SolutionMetadata {
   const doc = xmlParser.parse(xml) as Record<string, unknown>;
   const root = (doc['ImportExportXml'] ?? doc) as Record<string, unknown>;
@@ -742,13 +792,20 @@ function parseEntityNode(
   })();
 
   const isCustom         = xmlStr(entity, 'IsCustomEntity') === 'true' || xmlStr(entity, '@_IsCustomEntity') === 'true';
-  const isActivity       = xmlStr(entity, 'IsActivity') === 'true';
-  const changeTracking   = xmlStr(entity, 'ChangeTrackingEnabled') === 'true';
+  const isActivity       = xmlBool(entity, 'IsActivity') ?? false;
+  const changeTracking   = xmlBool(entity, 'ChangeTrackingEnabled') ?? false;
   const objectTypeCode   = (() => {
     const otc = entity['ObjectTypeCode'] as string | number | undefined;
     return otc !== undefined ? Number(otc) : undefined;
   })();
-  const ownershipType    = xmlStr(entity, 'OwnershipType') as 'User' | 'Organization' | 'None' | '';
+  const ownershipType: 'User' | 'Organization' | 'None' | '' = (() => {
+    const raw = (xmlStr(entity, 'OwnershipTypeMask') || xmlStr(entity, 'OwnershipType')).trim().toLowerCase();
+    if (!raw) return '';
+    if (raw.startsWith('org')) return 'Organization';
+    if (raw.startsWith('user') || raw.startsWith('team')) return 'User';
+    if (raw === 'none') return 'None';
+    return '';
+  })();
 
   // Parse attributes
   const attributesRoot = (entity['attributes'] ?? entity['Attributes'] ?? {}) as Record<string, unknown>;
@@ -772,14 +829,13 @@ function parseEntityNode(
       return (rlObj ? xmlStr(rlObj, '@_Value') || xmlStr(rlObj, 'Value') || xmlStr(rlObj, '#text') : '') || String(rl);
     })();
     const required    = requiredLevelValue === 'Required' || requiredLevelValue === 'SystemRequired' || requiredLevelValue === 'ApplicationRequired';
-    const isCustomAttr = xmlStr(a, 'IsCustomAttribute') === 'true' || xmlStr(a, '@_IsCustomAttribute') === 'true';
-    const isPrimaryName = xmlStr(a, 'IsPrimaryName') === 'true' || xmlStr(a, '@_IsPrimaryName') === 'true';
-    const isAuditEnabled = xmlStr(a, 'IsAuditEnabled') === 'true' || xmlStr(a, '@_IsAuditEnabled') === 'true'
-      || (() => { const ia = firstObject(a['IsAuditEnabled']); return ia ? xmlStr(ia, '@_Value') !== 'false' && xmlStr(ia, 'Value') !== 'false' : false; })();
-    const isValidForAdvancedFind = xmlStr(a, 'IsValidForAdvancedFind') === 'true' || xmlStr(a, '@_IsValidForAdvancedFind') === 'true'
-      || (() => { const av = firstObject(a['IsValidForAdvancedFind']); return av ? xmlStr(av, '@_Value') !== 'false' && xmlStr(av, 'Value') !== 'false' : false; })();
-    const isSecured = xmlStr(a, 'IsSecured') === 'true' || xmlStr(a, '@_IsSecured') === 'true'
-      || (() => { const is = firstObject(a['IsSecured']); return is ? xmlStr(is, '@_Value') === 'true' || xmlStr(is, 'Value') === 'true' : false; })();
+    const isCustomAttr = xmlBool(a, 'IsCustomAttribute', 'IsCustomField') ?? false;
+    const isPrimaryName = (xmlBool(a, 'IsPrimaryName') ?? false)
+      || xmlStr(a, 'DisplayMask').split('|').map((p) => p.trim()).includes('PrimaryName');
+    const isAuditEnabled = xmlBool(a, 'IsAuditEnabled') ?? false;
+    const isValidForAdvancedFind = (xmlBool(a, 'IsValidForAdvancedFind') ?? false)
+      || xmlStr(a, 'DisplayMask').split('|').map((p) => p.trim()).includes('ValidForAdvancedFind');
+    const isSecured = xmlBool(a, 'IsSecured') ?? false;
     const maxLength   = a['MaxLength'] !== undefined ? Number(a['MaxLength']) : undefined;
     const precision   = a['Precision'] !== undefined ? Number(a['Precision']) : undefined;
 
@@ -934,7 +990,8 @@ function parseEntityNode(
 
   // Entity set name (OData collection name) and primary attribute
   const entitySetName     = xmlStr(entity, 'EntitySetName') || xmlStr(entity, 'CollectionSchemaName') || undefined;
-  const primaryAttributeName = xmlStr(entity, 'PrimaryAttribute') || xmlStr(entity, 'PrimaryAttributeName') || undefined;
+  const primaryAttributeName = xmlStr(entity, 'PrimaryAttribute') || xmlStr(entity, 'PrimaryAttributeName')
+    || attributes.find((attr) => attr.isPrimaryName)?.name || undefined;
 
   // Entity description
   const entityDescription = (() => {
@@ -964,6 +1021,28 @@ function parseEntityNode(
     keys:                 [],
     entitySetName,
     primaryAttributeName,
+    metadataSource:              'local',
+    tableType:                   isActivity ? 'Activity' : 'Standard',
+    isDuplicateDetectionEnabled: xmlBool(entity, 'IsDuplicateCheckSupported', 'IsDuplicateDetectionEnabled'),
+    isAuditEnabled:              xmlBool(entity, 'IsAuditEnabled'),
+    isQuickCreateEnabled:        xmlBool(entity, 'IsQuickCreateEnabled'),
+    entityHelpUrlEnabled:        xmlBool(entity, 'EntityHelpUrlEnabled'),
+    entityHelpUrl:               xmlStr(entity, 'EntityHelpUrl') || undefined,
+    isActivityParty:             xmlBool(entity, 'IsActivityParty'),
+    isOneNoteIntegrationEnabled: xmlBool(entity, 'IsOneNoteIntegrationEnabled'),
+    isMailMergeEnabled:          xmlBool(entity, 'IsMailMergeEnabled'),
+    isDocumentManagementEnabled: xmlBool(entity, 'IsDocumentManagementEnabled'),
+    isConnectionsEnabled:        xmlBool(entity, 'IsConnectionsEnabled'),
+    autoCreateAccessTeams:       xmlBool(entity, 'AutoCreateAccessTeams'),
+    syncToExternalSearchIndex:   xmlBool(entity, 'SyncToExternalSearchIndex'),
+    isAvailableOffline:          xmlBool(entity, 'IsAvailableOffline', 'IsOfflineInMobileClient'),
+    autoRouteToOwnerQueue:       xmlBool(entity, 'AutoRouteToOwnerQueue'),
+    hasNotes:                    xmlBool(entity, 'HasNotes'),
+    hasActivities:               xmlBool(entity, 'HasActivities'),
+    hasFeedback:                 xmlBool(entity, 'HasFeedback'),
+    hasEmailAddresses:           xmlBool(entity, 'HasEmailAddresses'),
+    isValidForQueue:             xmlBool(entity, 'IsValidForQueue'),
+    isRetentionEnabled:          xmlBool(entity, 'IsRetentionEnabled'),
   };
 }
 
@@ -2303,6 +2382,7 @@ export async function parseSolutionZip(
 
   // ── Step 7: Assemble and return ──────────────────────────────────────────
   const parsed: ParsedSolution = {
+    missingDependencies: parseManifestMissingDependencies(solutionXml).map((dependency) => ({ ...dependency, solutionUniqueName: metadata.uniqueName })),
     metadata,
     entities:               entities.filter((e) => !!e.logicalName),
     optionSets,

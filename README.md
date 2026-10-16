@@ -65,7 +65,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.1.8 |
+| version | 1.1.9 |
 | description | Generate structured Markdown documentation from Solution ZIP files or a direct Dataverse connection |
 | icon | icons/pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |
@@ -92,11 +92,26 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 4. Choose the collection policy when additional bounded context is needed.
 5. Generate and review the solution-scoped documentation.
 
+When **Metadata Source** is enabled, each table identifies its origin as **Dataverse Connected** or **ZIP Export**, with any peer gap fill or Dataverse enrichment listed separately. Tables without a recorded source are labelled **Unknown**.
+
 ### Viewer controls
 
 The viewer supports rendered Markdown, raw Markdown, in-document search, copy, internal heading navigation, Mermaid diagrams, companion diagram documents, and responsive export menus. The **All Selected Solutions** entry is a full consolidated document, not just a summary.
 
 The **Create Consolidated Document (2+ solutions)** option is on by default. When two or more solutions are selected, PP-MD creates one consolidated document that collates every selected solution. It appears in its own **Consolidated** section at the top of the sidebar, alongside the individual solution documents. Clear the option to create only the individual documents.
+
+### Missing dependencies
+
+Enable **Generate Missing Dependencies** under **Documentation Options** to append a **Missing Dependencies** section to the document. The option is off by default and lists only installation/import prerequisites required by components packaged in that individual solution.
+
+- Local runs use only the ZIP's `SolutionManifest/MissingDependencies` records. Connected runs call Dataverse `RetrieveMissingDependencies` with that solution's unique name.
+- Runtime references, environment-wide table columns and relationships, peer gap-fill metadata, and dependencies belonging to other solutions are not used to infer import prerequisites.
+- Lists the dependent item, its type, the required component and type, associated tables, and source solution. Component IDs are retained when a friendly name cannot be resolved.
+- A successful empty result is reported explicitly. Collection failures or uncollected dependencies are marked as incomplete, not silently replaced with inferred references or a "no dependencies" message.
+- Excel exports include a separate **Missing Dependencies** table below the columns on each individual table worksheet, separated by a blank row. Only references associated with that table appear there; dependencies without a table association remain in the document-wide section. The option applies to individual and batch Excel exports.
+- Consolidated documents retain each individual solution's installation requirements and identify the source solution. Selecting another solution does not remove an individual solution's prerequisites.
+
+These prerequisites may already be installed in the target environment. The report describes what each solution needs to install/import, not whether a particular target environment can currently satisfy those requirements. Regenerate the documentation from the ZIP or connection to refresh the authoritative dependency results.
 
 ## Export Formats
 
@@ -106,6 +121,8 @@ The **Create Consolidated Document (2+ solutions)** option is on by default. Whe
 - **Excel**: a styled `.xlsx` workbook with Overview, Tables, Relationships, Processes, Apps, Integration, Security, and Automation sheets, plus one sheet per table (named by the table's display name) listing its columns. Table names on the Tables sheet link to their column sheets, every sheet is sorted alphabetically on its first column, and any document header details you enter appear at the top of the Overview sheet. Each table sheet starts with a `Display Name (schema_name)` title and a **Back to Tables** link, lists Display Name then Schema Name first, and includes lookup targets and option set values. Description columns wrap text.
 - **All Markdown**: a ZIP containing generated documents, companion diagrams, and optional dependency reports.
 - **By Category**: a ZIP containing category folders for individual solutions and the consolidated document.
+
+Excel table worksheets show General, Data and tracking, Make this table an option when, and Rows in this table metadata side by side above the column list. Headers use a charcoal-and-grey palette, with bold grey label cells, white value cells, and thin grey borders. Label/value pairs wrap within each section; unavailable values retain amber highlighting and include the reason they could not be retrieved.
 
 ## Accessibility
 

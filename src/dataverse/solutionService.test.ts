@@ -1,6 +1,90 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildEntityDefinition, fetchEnvironmentVariables, fetchModernDataverseArtifacts, listDataverseSolutions } from './solutionService';
+import { asOptionalBoolean, buildEntityDefinition, fetchEnvironmentVariables, fetchMissingDependencies, normalizeOwnershipType, fetchModernDataverseArtifacts, listDataverseSolutions } from './solutionService';
+
+describe('solution-specific import dependencies', () => {
+  it('uses the exact solution unique name and resolves only components returned by RetrieveMissingDependencies', async () => {
+    const queryData = vi.fn(async (query: string) => ({
+      value: [{
+        dependentcomponenttype: 2, dependentcomponentobjectid: 'column-id', dependentcomponentparentid: 'table-id',
+        requiredcomponenttype: 1, requiredcomponentobjectid: query.includes("'second'") ? 'second-required' : 'first-required',
+      }],
+    }));
+    const getEntityMetadata = vi.fn(async (id: string) => ({
+      LogicalName: id === 'table-id' ? 'new_case' : id === 'first-required' ? 'account' : 'contact',
+    }));
+    Object.defineProperty(globalThis, 'window', {
+      value: { dataverseAPI: {
+        queryData, getEntityMetadata,
+        getEntityRelatedMetadata: vi.fn(async () => ({ value: [{ MetadataId: 'column-id', LogicalName: 'new_customer' }] })),
+      } }, configurable: true,
+    });
+    const warnings: string[] = [];
+    const first = await fetchMissingDependencies('first', warnings);
+    const second = await fetchMissingDependencies('second', warnings);
+    expect(queryData.mock.calls.map(([query]) => query)).toEqual([
+      "RetrieveMissingDependencies(SolutionUniqueName='first')?$top=5000",
+      "RetrieveMissingDependencies(SolutionUniqueName='second')?$top=5000",
+    ]);
+    expect(first).toEqual([{
+      dependentName: 'new_case.new_customer', dependentType: 'Column', dependentId: 'column-id',
+      requiredName: 'account', requiredType: 'Table', requiredId: 'first-required',
+      tableLogicalNames: ['new_case'], solutionUniqueName: 'first',
+    }]);
+    expect(second[0]).toMatchObject({ solutionUniqueName: 'second', requiredName: 'contact' });
+    expect(warnings).toEqual([]);
+  });
+
+  it('escapes solution name literals and retains component IDs when names cannot be resolved', async () => {
+    const queryData = vi.fn(async () => ({ value: [{
+      dependentcomponenttype: 1, dependentcomponentobjectid: 'dep-id',
+      requiredcomponenttype: 1, requiredcomponentobjectid: 'req-id',
+    }] }));
+    Object.defineProperty(globalThis, 'window', {
+      value: { dataverseAPI: {
+        queryData, getEntityMetadata: vi.fn(async () => { throw new Error('Permission denied'); }),
+      } }, configurable: true,
+    });
+    const warnings: string[] = [];
+    expect(await fetchMissingDependencies("team's / solution", warnings)).toEqual([
+      expect.objectContaining({ dependentName: 'dep-id', requiredName: 'req-id', solutionUniqueName: "team's / solution" }),
+    ]);
+    expect(queryData).toHaveBeenCalledWith("RetrieveMissingDependencies(SolutionUniqueName='team''s%20%2F%20solution')?$top=5000");
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('component ID is retained');
+    expect(warnings[0]).toContain('Permission denied');
+  });
+
+  it('rejects missing solution identity, malformed results and truncated responses instead of inferring dependencies', async () => {
+    const queryData = vi.fn(async () => ({ value: [{ dependentcomponenttype: 1 }] }));
+    Object.defineProperty(globalThis, 'window', {
+      value: { dataverseAPI: { queryData } }, configurable: true,
+    });
+    await expect(fetchMissingDependencies('', [])).rejects.toThrow('unique name is required');
+    expect(queryData).not.toHaveBeenCalled();
+    await expect(fetchMissingDependencies('sample', [])).rejects.toThrow('invalid RetrieveMissingDependencies record');
+    queryData.mockResolvedValueOnce({ value: Array.from({ length: 5000 }, () => ({ dependentcomponenttype: 1 })) });
+    await expect(fetchMissingDependencies('sample', [])).rejects.toThrow('5000-row safety limit');
+  });
+
+  it('surfaces collection failures on the source model without falling back to environment metadata', async () => {
+    Object.defineProperty(globalThis, 'window', {
+      value: { dataverseAPI: {
+        fetchXmlQuery: vi.fn(async (xml: string) => ({ value: xml.includes('<entity name="solution">')
+          ? [{ uniquename: 'selected_solution', friendlyname: 'Selected' }] : [] })),
+        queryData: vi.fn(async (query: string) => {
+          if (query.startsWith('RetrieveMissingDependencies')) throw new Error('Access denied');
+          return { value: [] };
+        }),
+      } }, configurable: true,
+    });
+    const result = await (await import('./solutionService')).buildParsedSolutionFromDataverse('selected-id');
+    expect(result.missingDependencies).toBeUndefined();
+    expect(result.missingDependenciesError).toContain('selected_solution');
+    expect(result.missingDependenciesError).toContain('Access denied');
+    expect(result.warnings).toContain(result.missingDependenciesError);
+  });
+});
 
 describe('fetchModernDataverseArtifacts', () => {
   it('collects connected modern artifact families scoped to the selected solution', async () => {
@@ -183,7 +267,12 @@ describe('fetchModernDataverseArtifacts', () => {
           queryData: vi.fn(async () => ({ value: [] })),
           getAllEntitiesMetadata: mockGetAllEntitiesMetadata,
           getEntityMetadata: mockGetEntityMetadata,
-          getEntityRelatedMetadata: vi.fn(async () => ({ value: [] })),
+          getEntityRelatedMetadata: vi.fn(async (_name: string, relation: string) => ({
+            value: relation === 'ManyToOneRelationships' ? [{
+              SchemaName: 'account_external', ReferencingEntity: 'account', ReferencedEntity: 'new_external',
+              ReferencingAttribute: 'new_externalid',
+            }] : [],
+          })),
         },
       },
       configurable: true,
@@ -192,6 +281,10 @@ describe('fetchModernDataverseArtifacts', () => {
     const solution = await (await import('./solutionService')).buildParsedSolutionFromDataverse('sol-123');
 
     expect(solution.entities.map((entity) => entity.logicalName)).toContain('account');
+    expect(solution.entities.some((entity) => entity.logicalName === 'new_external')).toBe(false);
+    expect(solution.entities[0].relationships).toEqual([]);
+    expect(solution.missingDependencies).toEqual([]);
+    expect(window.dataverseAPI.queryData).toHaveBeenCalledWith("RetrieveMissingDependencies(SolutionUniqueName='solution')?$top=5000");
     expect(mockGetEntityMetadata).toHaveBeenCalledWith('entity-meta-1', false, ['MetadataId', 'LogicalName', 'IsIntersect']);
     expect(mockGetAllEntitiesMetadata).not.toHaveBeenCalled();
   });
@@ -302,5 +395,21 @@ describe('fetchModernDataverseArtifacts', () => {
     expect(byName.get('parentaccountid')?.lookupTarget).toBe('account');
     expect(byName.get('industrycode')?.optionSetName).toBe('account_industrycode');
     expect(byName.get('industrycode')?.options).toHaveLength(1);
+  });
+});
+
+describe('metadata value helpers', () => {
+  it('reads managed and plain boolean properties', () => {
+    expect(asOptionalBoolean({ Value: true })).toBe(true);
+    expect(asOptionalBoolean('0')).toBe(false);
+    expect(asOptionalBoolean(undefined)).toBeUndefined();
+    expect(asOptionalBoolean('maybe')).toBeUndefined();
+  });
+
+  it('normalizes Dataverse ownership types', () => {
+    expect(normalizeOwnershipType('UserOwned')).toBe('User');
+    expect(normalizeOwnershipType('OrganizationOwned')).toBe('Organization');
+    expect(normalizeOwnershipType('None')).toBe('None');
+    expect(normalizeOwnershipType('')).toBeUndefined();
   });
 });

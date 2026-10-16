@@ -1,6 +1,12 @@
 import * as XLSX from 'xlsx-js-style';
 import type { ParsedSolution, EntityDefinition } from '../types/solution';
 import type { DocumentContext } from '../generator/markdownGenerator';
+import { buildTableMetadataBlocks, NOT_AVAILABLE_PREFIX, type MetadataBlock } from '../generator/tableMetadata';
+import { collectMissingDependencies, dependenciesForTable, missingDependenciesNotice, MISSING_DEPENDENCIES_NOTE } from '../generator/missingDependencies';
+
+export interface ExcelExportOptions {
+  generateMissingDependencies?: boolean;
+}
 
 type CellValue = string | number;
 
@@ -20,7 +26,50 @@ interface SheetDefinition {
   preamble?: { title: string; rows: CellValue[][] };
   /** Optional heading row with a "back" link to another worksheet. */
   title?: { text: string; backLinkSheet?: string };
+  /** Optional property sections (label/value pairs) rendered between the title and the main table. */
+  metadataBlocks?: MetadataBlock[];
+  dependencies?: { headers: string[]; rows: CellValue[][]; notice?: string };
 }
+
+/** Zero-based column index used for the "Back to ..." link on titled worksheets (column E). */
+const BACK_LINK_COLUMN = 4;
+
+export { NOT_AVAILABLE_PREFIX, buildTableMetadataBlocks };
+
+const metadataBorder = {
+  top: { style: 'thin', color: { rgb: '808080' } },
+  bottom: { style: 'thin', color: { rgb: '808080' } },
+  left: { style: 'thin', color: { rgb: '808080' } },
+  right: { style: 'thin', color: { rgb: '808080' } },
+};
+
+const metadataHeadingStyle = {
+  fill: { fgColor: { rgb: '252835' } },
+  font: { name: 'Calibri', sz: 11, bold: true, color: { rgb: 'FFFFFF' } },
+  alignment: { vertical: 'center', wrapText: true },
+  border: metadataBorder,
+};
+
+const metadataLabelStyle = {
+  fill: { fgColor: { rgb: 'D6DCE4' } },
+  font: { name: 'Calibri', sz: 11, bold: true, color: { rgb: '000000' } },
+  alignment: { vertical: 'top', wrapText: true },
+  border: metadataBorder,
+};
+
+const metadataValueStyle = {
+  fill: { fgColor: { rgb: 'FFFFFF' } },
+  font: { name: 'Calibri', sz: 11, color: { rgb: '000000' } },
+  alignment: { vertical: 'top', wrapText: true },
+  border: metadataBorder,
+};
+
+const metadataUnavailableStyle = {
+  fill: { fgColor: { rgb: 'FEF3C7' } },
+  font: { name: 'Calibri', sz: 11, italic: true, color: { rgb: '92400E' } },
+  alignment: { vertical: 'top', wrapText: true },
+  border: metadataBorder,
+};
 
 const backButtonStyle = {
   fill: { fgColor: { rgb: 'DBEAFE' } },
@@ -35,8 +84,14 @@ const backButtonStyle = {
 };
 
 const sheetTitleStyle = {
-  font: { bold: true, sz: 14, color: { rgb: '1E3A8A' } },
-  alignment: { vertical: 'center' },
+  ...metadataHeadingStyle,
+  font: { ...metadataHeadingStyle.font, sz: 14 },
+};
+
+const tableNameStyle = {
+  ...metadataValueStyle,
+  font: { ...metadataValueStyle.font, bold: true, sz: 14 },
+  alignment: { vertical: 'center', wrapText: true },
 };
 
 const wrapStyle = { alignment: { wrapText: true, vertical: 'top' } };
@@ -132,16 +187,47 @@ function internalLink(sheetName: string): string {
   return `#'${sheetName.replace(/'/g, "''")}'!A1`;
 }
 
+function titleRowValues(title: NonNullable<SheetDefinition['title']>): CellValue[] {
+  if (!title.backLinkSheet) return [title.text];
+  const row: CellValue[] = Array.from({ length: BACK_LINK_COLUMN + 1 }, () => '');
+  row[0] = 'Table Name(s)';
+  row[1] = title.text;
+  row[BACK_LINK_COLUMN] = `← Back to ${title.backLinkSheet}`;
+  return row;
+}
+
 function makeSheet(definition: SheetDefinition): XLSX.WorkSheet {
   const aoa: CellValue[][] = [];
-  let titleRows = 0;
+  const titleRow = definition.title ? titleRowValues(definition.title) : [];
   if (definition.title) {
-    aoa.push(definition.title.backLinkSheet
-      ? [definition.title.text, `← Back to ${definition.title.backLinkSheet}`]
-      : [definition.title.text]);
+    aoa.push(titleRow);
     aoa.push([]);
-    titleRows = aoa.length;
   }
+  const metadataCells: { row: number; column: number; span: number; kind: 'heading' | 'label' | 'value' }[] = [];
+  const metadataStartRow = aoa.length;
+  let metadataColumnCount = 0;
+  (definition.metadataBlocks ?? []).forEach((block) => {
+    const pairs = Math.max(1, Math.ceil(block.items.length / 6));
+    const rowsPerPair = Math.ceil(block.items.length / pairs);
+    const column = metadataColumnCount;
+    metadataColumnCount += pairs * 2;
+    aoa[metadataStartRow] ??= [];
+    aoa[metadataStartRow][column] = block.heading;
+    metadataCells.push({ row: metadataStartRow, column, span: pairs * 2, kind: 'heading' });
+    block.items.forEach(([label, value], index) => {
+      const row = metadataStartRow + 1 + index % rowsPerPair;
+      const labelColumn = column + Math.floor(index / rowsPerPair) * 2;
+      aoa[row] ??= [];
+      aoa[row][labelColumn] = label;
+      aoa[row][labelColumn + 1] = value;
+      metadataCells.push(
+        { row, column: labelColumn, span: 1, kind: 'label' },
+        { row, column: labelColumn + 1, span: 1, kind: 'value' },
+      );
+    });
+  });
+  if (metadataCells.length > 0) aoa.push([]);
+  const titleRows = aoa.length;
   const hasPreamble = Boolean(definition.preamble && definition.preamble.rows.length > 0);
   if (definition.preamble && hasPreamble) {
     aoa.push([definition.preamble.title]);
@@ -150,6 +236,18 @@ function makeSheet(definition: SheetDefinition): XLSX.WorkSheet {
   }
   const headerRow = aoa.length;
   aoa.push(definition.headers, ...definition.rows);
+  let dependencyTitleRow = -1;
+  if (definition.dependencies) {
+    aoa.push([]);
+    dependencyTitleRow = aoa.length;
+    aoa.push(['Missing Dependencies'], [
+      [MISSING_DEPENDENCIES_NOTE, definition.dependencies.notice].filter(Boolean).join('\n'),
+    ], definition.dependencies.headers);
+    aoa.push(...(definition.dependencies.rows.length > 0
+      ? definition.dependencies.rows
+      : [[definition.dependencies.notice ? 'Dependency report incomplete; see the collection notice above.'
+        : 'No missing installation/import prerequisites were declared for this table.']]));
+  }
 
   const sheet = XLSX.utils.aoa_to_sheet(aoa);
 
@@ -157,13 +255,41 @@ function makeSheet(definition: SheetDefinition): XLSX.WorkSheet {
     const titleCell = sheet[XLSX.utils.encode_cell({ r: 0, c: 0 })];
     if (titleCell) titleCell.s = sheetTitleStyle;
     if (definition.title.backLinkSheet) {
-      const backCell = sheet[XLSX.utils.encode_cell({ r: 0, c: 1 })];
+      for (let column = 1; column < BACK_LINK_COLUMN; column += 1) {
+        const cell = sheet[XLSX.utils.encode_cell({ r: 0, c: column })];
+        if (cell) cell.s = tableNameStyle;
+      }
+      sheet['!merges'] = [{ s: { r: 0, c: 1 }, e: { r: 0, c: BACK_LINK_COLUMN - 1 } }];
+      const backCell = sheet[XLSX.utils.encode_cell({ r: 0, c: BACK_LINK_COLUMN })];
       if (backCell) {
         backCell.l = { Target: internalLink(definition.title.backLinkSheet), Tooltip: `Return to the ${definition.title.backLinkSheet} worksheet` };
         backCell.s = backButtonStyle;
       }
     }
     sheet['!rows'] = [{ hpt: 24 }];
+  }
+
+  if (metadataCells.length > 0) {
+    const merges: XLSX.Range[] = sheet['!merges'] ?? [];
+    metadataCells.forEach(({ row, column, span, kind }) => {
+      if (kind === 'heading') {
+        for (let c = column; c < column + span; c += 1) {
+          const ref = XLSX.utils.encode_cell({ r: row, c });
+          sheet[ref] = sheet[ref] ?? { t: 's', v: '' };
+          const heading = text(aoa[row][column]);
+          sheet[ref].s = heading === 'General' || heading === 'Data and tracking'
+            ? metadataLabelStyle : metadataHeadingStyle;
+        }
+        merges.push({ s: { r: row, c: column }, e: { r: row, c: column + span - 1 } });
+        return;
+      }
+      const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+      if (cell) {
+        cell.s = kind === 'label' ? metadataLabelStyle
+          : text(cell.v).startsWith(NOT_AVAILABLE_PREFIX) ? metadataUnavailableStyle : metadataValueStyle;
+      }
+    });
+    sheet['!merges'] = merges;
   }
 
   if (hasPreamble) {
@@ -199,21 +325,65 @@ function makeSheet(definition: SheetDefinition): XLSX.WorkSheet {
     });
   }
 
-  const titleRow: CellValue[] = definition.title
-    ? [definition.title.text, definition.title.backLinkSheet ? `← Back to ${definition.title.backLinkSheet}` : '']
-    : [];
   const allRows = [titleRow, ...(definition.preamble?.rows ?? []), ...definition.rows];
-  sheet['!cols'] = definition.headers.map((header, index) => {
+  const columnCount = Math.max(definition.headers.length, metadataColumnCount);
+  const columns = Array.from({ length: columnCount }, (_, index) => {
+    const header = definition.headers[index] ?? '';
     if (isDescriptionHeader(header)) return { wch: DESCRIPTION_COLUMN_WIDTH };
     const longest = Math.max(header.length, ...allRows.map((row) => text(row[index]).length));
-    return { wch: Math.min(Math.max(longest + 2, 12), 48) };
+    const minimum = index < metadataColumnCount ? (index % 2 === 0 ? 28 : 24) : 12;
+    return { wch: Math.min(Math.max(longest + 2, minimum), 48) };
   });
+  sheet['!cols'] = columns;
+
+  // Explicit heights keep wrapped metadata readable in viewers that do not auto-fit rows.
+  const rowHeights: XLSX.RowInfo[] = sheet['!rows'] ?? [];
+  metadataCells.forEach(({ row, column, span, kind }) => {
+    const width = columns.slice(column, column + span).reduce((sum, item) => sum + item.wch, 0) - 2;
+    const value = text(sheet[XLSX.utils.encode_cell({ r: row, c: column })]?.v);
+    const lines = value.split(/\r\n|\r|\n/).reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / width)), 0);
+    const height = Math.max(kind === 'heading' ? 24 : 20, lines * 15 + 4);
+    rowHeights[row] = { hpt: Math.max(rowHeights[row]?.hpt ?? 0, height) };
+  });
+  if (metadataCells.length > 0) sheet['!rows'] = rowHeights;
+  if (definition.dependencies) {
+    const lastColumn = definition.headers.length - 1;
+    const merges: XLSX.Range[] = sheet['!merges'] ?? [];
+    for (const row of [dependencyTitleRow, dependencyTitleRow + 1]) {
+      const cell = sheet[XLSX.utils.encode_cell({ r: row, c: 0 })];
+      cell.s = row === dependencyTitleRow ? sectionTitleStyle : wrapStyle;
+      merges.push({ s: { r: row, c: 0 }, e: { r: row, c: lastColumn } });
+      const width = columns.slice(0, lastColumn + 1).reduce((sum, item) => sum + item.wch, 0) - 2;
+      const lines = text(cell.v).split(/\r\n|\r|\n/).reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / width)), 0);
+      rowHeights[row] = { hpt: Math.max(24, lines * 15 + 4) };
+    }
+    definition.dependencies.headers.forEach((_, column) => {
+      sheet[XLSX.utils.encode_cell({ r: dependencyTitleRow + 2, c: column })].s = headerStyle;
+    });
+    const rows = definition.dependencies.rows.length > 0 ? definition.dependencies.rows : [aoa[dependencyTitleRow + 3]];
+    rows.forEach((values, index) => {
+      const row = dependencyTitleRow + 3 + index;
+      let lines = 1;
+      values.forEach((value, column) => {
+        const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+        cell.s = metadataValueStyle;
+        lines = Math.max(lines, ...text(value).split(/\r\n|\r|\n/).map((line) => Math.ceil(line.length / (columns[column].wch - 2))));
+      });
+      rowHeights[row] = { hpt: lines * 15 + 4 };
+    });
+    if (definition.dependencies.rows.length === 0) {
+      merges.push({ s: { r: dependencyTitleRow + 3, c: 0 }, e: { r: dependencyTitleRow + 3, c: lastColumn } });
+      rowHeights[dependencyTitleRow + 3] = { hpt: 24 };
+    }
+    sheet['!merges'] = merges;
+    sheet['!rows'] = rowHeights;
+  }
 
   const tableRange = {
     s: { r: headerRow, c: 0 },
     e: { r: headerRow + definition.rows.length, c: Math.max(definition.headers.length - 1, 0) },
   };
-  sheet['!autofilter'] = { ref: XLSX.utils.encode_range(tableRange) };
+  if (definition.rows.length > 0) sheet['!autofilter'] = { ref: XLSX.utils.encode_range(tableRange) };
   sheet['!freeze'] = { xSplit: 0, ySplit: headerRow + 1 };
   return sheet;
 }
@@ -226,7 +396,7 @@ function optionSetSummary(attribute: EntityDefinition['attributes'][number]): st
   return `Local: ${attribute.options.map((option) => `${option.label} (${option.value})`).join(', ')}`;
 }
 
-function buildSheets(solution: ParsedSolution, documentContext?: DocumentContext): SheetDefinition[] {
+function buildSheets(solution: ParsedSolution, documentContext: DocumentContext | undefined, options: ExcelExportOptions): SheetDefinition[] {
   const usedNames = new Set(
     ['Overview', 'Tables', 'Relationships', 'Processes', 'Apps', 'Integration', 'Security', 'Automation']
       .map((name) => name.toLowerCase()),
@@ -348,9 +518,20 @@ function buildSheets(solution: ParsedSolution, documentContext?: DocumentContext
     },
   ];
 
+  const missingDependencies = options.generateMissingDependencies ? collectMissingDependencies(solution) : [];
   const perTableSheets: SheetDefinition[] = tableSheets.map(({ entity, sheetName }) => ({
     name: sheetName,
     title: { text: `${entityDisplayName(entity)} (${entity.logicalName})`, backLinkSheet: 'Tables' },
+    metadataBlocks: buildTableMetadataBlocks(entity),
+    dependencies: options.generateMissingDependencies ? {
+      notice: missingDependenciesNotice(solution),
+      headers: ['Dependent Item', 'Item Type', 'Required Component', 'Required Type', 'Solution'],
+      rows: dependenciesForTable(missingDependencies, entity.logicalName).map((dependency) => [
+        dependency.dependentName, dependency.dependentType,
+        dependency.requiredParent ? `${dependency.requiredParent}.${dependency.requiredName}` : dependency.requiredName,
+        dependency.requiredType, dependency.solutionUniqueName ?? solution.metadata.uniqueName,
+      ]),
+    } : undefined,
     headers: COLUMN_HEADERS,
     rows: entity.attributes.map((attribute) => [
       text(attribute.displayName).trim() || attribute.name,
@@ -373,9 +554,9 @@ function buildSheets(solution: ParsedSolution, documentContext?: DocumentContext
   ].map(sortDefinition);
 }
 
-export function createSolutionWorkbook(solution: ParsedSolution, documentContext?: DocumentContext): Blob {
+export function createSolutionWorkbook(solution: ParsedSolution, documentContext?: DocumentContext, options: ExcelExportOptions = {}): Blob {
   const workbook = XLSX.utils.book_new();
-  buildSheets(solution, documentContext).forEach((definition) => {
+  buildSheets(solution, documentContext, options).forEach((definition) => {
     const sheet = makeSheet(definition);
     XLSX.utils.book_append_sheet(workbook, sheet, definition.name);
   });

@@ -1197,13 +1197,13 @@ export default function App() {
     if (!result) return;
     const safeName = toSafeMarkdownBaseName(result.solution.metadata.displayName || result.solution.metadata.uniqueName, 'solution');
     try {
-      await exportExcel(result.solution, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`, documentContext);
+      await exportExcel(result.solution, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`, documentContext, { generateMissingDependencies: documentationSettings.generateMissingDependencies });
       await showNotification('Export Successful', 'Excel workbook exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('Excel export failed:', error);
       await showNotification('Export Failed', 'Failed to export Excel workbook.', 'error', 3000);
     }
-  }, [results, activeIdx, showCompanionDiagrams, documentContext]);
+  }, [results, activeIdx, showCompanionDiagrams, documentContext, documentationSettings.generateMissingDependencies]);
 
   const handleExportPdf = useCallback(async (markdown: string, renderedTitle: string, diagramImages: ReadonlyArray<string | null>) => {
     const result = results[activeIdx];
@@ -1307,7 +1307,7 @@ export default function App() {
         const baseName = uniqueName(`${safeName}${result.isConsolidated ? '-summary' : '-documentation'}`);
 
         if (format === 'xlsx') {
-          zip.file(`${baseName}.xlsx`, createSolutionWorkbook(result.solution, documentContext));
+          zip.file(`${baseName}.xlsx`, createSolutionWorkbook(result.solution, documentContext, { generateMissingDependencies: documentationSettings.generateMissingDependencies }));
           continue;
         }
 
@@ -1341,7 +1341,7 @@ export default function App() {
     } finally {
       setBatchExportFormat(null);
     }
-  }, [results, batchExportFormat, documentContext, documentationSettings.diagramColourTheme]);
+  }, [results, batchExportFormat, documentContext, documentationSettings.diagramColourTheme, documentationSettings.generateMissingDependencies]);
 
   /**
    * Exports each solution's documentation split into logically-grouped files
@@ -1866,6 +1866,16 @@ export default function App() {
                       <summary>Documentation Options</summary>
                       <fieldset className={styles.documentScope}>
                       <legend className="sr-only">Documentation Options</legend>
+                      <label className={styles.generateToggle}>
+                        <input
+                          type="checkbox"
+                          checked={documentationSettings.generateMissingDependencies}
+                          onChange={() => handleDocumentationSettingsChange({ generateMissingDependencies: !documentationSettings.generateMissingDependencies })}
+                          aria-describedby="missing-dependencies-help"
+                        />
+                        <span>Generate Missing Dependencies</span>
+                      </label>
+                      <p id="missing-dependencies-help" className={styles.optionHint}>List installation/import prerequisites required by components in each individual solution, using its ZIP manifest or solution-specific Dataverse dependency records. Results appear at the end of the document and on related Excel table worksheets; runtime references and other solutions' dependencies are excluded.</p>
                       {([
                         ['flows', 'Flows and automation'],
                         ['apps', 'Power Apps'],

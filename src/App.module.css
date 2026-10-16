@@ -682,6 +682,14 @@
   line-height: 1;
 }
 
+.optionHint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
 .optionField input,
 .optionField select {
   min-width: 0;

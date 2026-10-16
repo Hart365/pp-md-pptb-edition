@@ -9,7 +9,7 @@ on:
       release_tag:
         description: Existing tag to build and publish assets for
         required: true
-        default: v1.1.8
+        default: v1.1.9
 
 permissions:
   contents: write

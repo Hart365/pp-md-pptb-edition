@@ -33,6 +33,7 @@ import type {
   DataverseCustomApiDefinition,
   DataverseDependencyEdge,
   SolutionCollectionPolicy,
+  MissingDependency,
 } from '../types/solution';
 import {
   AppType,
@@ -40,6 +41,7 @@ import {
   ProcessCategory,
   WebResourceType,
 } from '../types/solution';
+import { dependencyComponentType } from '../generator/missingDependencies';
 
 export interface DataverseSolutionSummary {
   solutionId: string;
@@ -70,6 +72,32 @@ const ENTITY_PROPERTIES = [
   'OwnershipType',
   'EntitySetName',
   'PrimaryNameAttribute',
+] as const;
+
+// Table-property flags shown on the XLSX table metadata header. Requested
+// separately so an unsupported property on older orgs cannot break the base fetch.
+const EXTENDED_ENTITY_PROPERTIES = [
+  'TableType',
+  'HasNotes',
+  'HasActivities',
+  'HasFeedback',
+  'HasEmailAddresses',
+  'IsAuditEnabled',
+  'IsDuplicateDetectionEnabled',
+  'IsQuickCreateEnabled',
+  'EntityHelpUrlEnabled',
+  'EntityHelpUrl',
+  'IsRetentionEnabled',
+  'IsActivityParty',
+  'IsOneNoteIntegrationEnabled',
+  'IsMailMergeEnabled',
+  'IsDocumentManagementEnabled',
+  'IsConnectionsEnabled',
+  'AutoCreateAccessTeams',
+  'SyncToExternalSearchIndex',
+  'IsAvailableOffline',
+  'IsValidForQueue',
+  'AutoRouteToOwnerQueue',
 ] as const;
 
 const FETCH_XML_PAGE_SIZE = 5000;
@@ -118,6 +146,42 @@ function asBoolean(value: unknown, fallback = false): boolean {
     if (normalized === 'false' || normalized === '0') return false;
   }
   return fallback;
+}
+
+/** Reads plain booleans and BooleanManagedProperty ({ Value }) shapes; undefined when absent. */
+export function asOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'object' && 'Value' in (value as Record<string, unknown>)) {
+    return asOptionalBoolean((value as Record<string, unknown>).Value);
+  }
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1') return true;
+    if (normalized === 'false' || normalized === '0') return false;
+  }
+  return undefined;
+}
+
+/** Maps Dataverse OwnershipType values (UserOwned, OrganizationOwned, None, ...) to the shared shape. */
+export function normalizeOwnershipType(value: unknown): EntityDefinition['ownershipType'] {
+  const raw = asString(value).trim().toLowerCase();
+  if (!raw) return undefined;
+  if (raw.startsWith('user') || raw.startsWith('team')) return 'User';
+  if (raw.startsWith('org') || raw.startsWith('business')) return 'Organization';
+  if (raw === 'none') return 'None';
+  return undefined;
+}
+
+async function fetchEntityMetadata(logicalName: string): Promise<Record<string, unknown>> {
+  try {
+    return await window.dataverseAPI.getEntityMetadata(
+      logicalName, true, [...ENTITY_PROPERTIES, ...EXTENDED_ENTITY_PROPERTIES],
+    ) as Record<string, unknown>;
+  } catch {
+    return await window.dataverseAPI.getEntityMetadata(logicalName, true, [...ENTITY_PROPERTIES]) as Record<string, unknown>;
+  }
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -635,7 +699,7 @@ function lookupTargetsFromRelationships(logicalName: string, manyToOne: Record<s
 }
 
 export async function buildEntityDefinition(logicalName: string): Promise<EntityDefinition> {
-  const metadata = await window.dataverseAPI.getEntityMetadata(logicalName, true, [...ENTITY_PROPERTIES]);
+  const metadata = await fetchEntityMetadata(logicalName);
   const [attributesResponse, oneToManyResponse, manyToOneResponse, manyToManyResponse, typedDetails] = await Promise.all([
     // Only request properties that are valid for base AttributeMetadata.
     // Type-specific properties (for example MaxLength on StringAttributeMetadata)
@@ -772,9 +836,31 @@ export async function buildEntityDefinition(logicalName: string): Promise<Entity
     changeTracking: asBoolean(metadata.ChangeTrackingEnabled),
     attributes,
     relationships,
-    ownershipType: asString(metadata.OwnershipType) as EntityDefinition['ownershipType'],
+    ownershipType: normalizeOwnershipType(metadata.OwnershipType),
     entitySetName: asString(metadata.EntitySetName) || undefined,
     primaryAttributeName: asString(metadata.PrimaryNameAttribute) || undefined,
+    metadataSource: 'dataverse',
+    tableType: asString(metadata.TableType) || (asBoolean(metadata.IsActivity) ? 'Activity' : undefined),
+    hasNotes: asOptionalBoolean(metadata.HasNotes),
+    hasActivities: asOptionalBoolean(metadata.HasActivities),
+    hasFeedback: asOptionalBoolean(metadata.HasFeedback),
+    hasEmailAddresses: asOptionalBoolean(metadata.HasEmailAddresses),
+    isAuditEnabled: asOptionalBoolean(metadata.IsAuditEnabled),
+    isDuplicateDetectionEnabled: asOptionalBoolean(metadata.IsDuplicateDetectionEnabled),
+    isQuickCreateEnabled: asOptionalBoolean(metadata.IsQuickCreateEnabled),
+    entityHelpUrlEnabled: asOptionalBoolean(metadata.EntityHelpUrlEnabled),
+    entityHelpUrl: asString(metadata.EntityHelpUrl) || undefined,
+    isRetentionEnabled: asOptionalBoolean(metadata.IsRetentionEnabled),
+    isActivityParty: asOptionalBoolean(metadata.IsActivityParty),
+    isOneNoteIntegrationEnabled: asOptionalBoolean(metadata.IsOneNoteIntegrationEnabled),
+    isMailMergeEnabled: asOptionalBoolean(metadata.IsMailMergeEnabled),
+    isDocumentManagementEnabled: asOptionalBoolean(metadata.IsDocumentManagementEnabled),
+    isConnectionsEnabled: asOptionalBoolean(metadata.IsConnectionsEnabled),
+    autoCreateAccessTeams: asOptionalBoolean(metadata.AutoCreateAccessTeams),
+    syncToExternalSearchIndex: asOptionalBoolean(metadata.SyncToExternalSearchIndex),
+    isAvailableOffline: asOptionalBoolean(metadata.IsAvailableOffline),
+    isValidForQueue: asOptionalBoolean(metadata.IsValidForQueue),
+    autoRouteToOwnerQueue: asOptionalBoolean(metadata.AutoRouteToOwnerQueue),
   };
 }
 
@@ -1713,6 +1799,96 @@ export async function fetchModernDataverseArtifacts(
   return { agents, aiModels, desktopFlows, dataflows, customApis: customApiRows, offlineProfiles };
 }
 
+interface DependencyComponentLabel {
+  name: string;
+  table?: string;
+}
+
+/** Reads only import prerequisites for the named solution, never the environment-wide runtime graph. */
+export async function fetchMissingDependencies(solutionUniqueName: string, warnings: string[]): Promise<MissingDependency[]> {
+  if (!solutionUniqueName.trim()) throw new Error('A solution unique name is required to retrieve import dependencies.');
+  const literal = encodeURIComponent(solutionUniqueName.replace(/'/g, "''"));
+  const rows = await queryDataverse(`RetrieveMissingDependencies(SolutionUniqueName='${literal}')`);
+  const labels = new Map<string, Promise<DependencyComponentLabel>>();
+  const resolve = (type: number, id: string, parentId: string): Promise<DependencyComponentLabel> => {
+    const key = `${type}|${id.toLowerCase()}|${parentId.toLowerCase()}`;
+    const existing = labels.get(key);
+    if (existing) return existing;
+    const promise = (async (): Promise<DependencyComponentLabel> => {
+      let table: string | undefined;
+      try {
+        if (type === 1) {
+          const metadata = await window.dataverseAPI.getEntityMetadata(id, false, ['LogicalName']);
+          if (!metadata.LogicalName) throw new Error('Dataverse did not return the table logical name.');
+          return { name: metadata.LogicalName, table: metadata.LogicalName };
+        }
+        if (type === 2 && parentId && parentId !== '00000000-0000-0000-0000-000000000000') {
+          const parent = await resolve(1, parentId, '');
+          if (!parent.table) return { name: id };
+          table = parent.table;
+          const response = await window.dataverseAPI.getEntityRelatedMetadata(parent.table, 'Attributes', ['MetadataId', 'LogicalName']);
+          const attribute = response.value.find((item) => asString(item.MetadataId).toLowerCase() === id.toLowerCase());
+          if (!attribute?.LogicalName) throw new Error('Dataverse did not return the column logical name.');
+          return { name: `${parent.table}.${asString(attribute.LogicalName)}`, table: parent.table };
+        }
+        const recordTypes: Record<number, { entity: string; id: string; name: string; table?: string }> = {
+          20: { entity: 'role', id: 'roleid', name: 'name' },
+          24: { entity: 'systemform', id: 'formid', name: 'name', table: 'objecttypecode' },
+          26: { entity: 'savedquery', id: 'savedqueryid', name: 'name', table: 'returnedtypecode' },
+          29: { entity: 'workflow', id: 'workflowid', name: 'name', table: 'primaryentity' },
+          31: { entity: 'report', id: 'reportid', name: 'name' },
+          60: { entity: 'systemform', id: 'formid', name: 'name', table: 'objecttypecode' },
+          61: { entity: 'webresource', id: 'webresourceid', name: 'name' },
+          80: { entity: 'appmodule', id: 'appmoduleid', name: 'uniquename' },
+          90: { entity: 'plugintype', id: 'plugintypeid', name: 'typename' },
+          91: { entity: 'pluginassembly', id: 'pluginassemblyid', name: 'name' },
+          92: { entity: 'sdkmessageprocessingstep', id: 'sdkmessageprocessingstepid', name: 'name' },
+          300: { entity: 'canvasapp', id: 'canvasappid', name: 'name' },
+          380: { entity: 'environmentvariabledefinition', id: 'environmentvariabledefinitionid', name: 'schemaname' },
+          10039: { entity: 'connectionreference', id: 'connectionreferenceid', name: 'connectionreferencelogicalname' },
+        };
+        const recordType = recordTypes[type];
+        if (!recordType) {
+          const parent = [3, 10, 14].includes(type) && parentId && parentId !== '00000000-0000-0000-0000-000000000000'
+            ? await resolve(1, parentId, '') : undefined;
+          return { name: id, table: parent?.table };
+        }
+        const records = await fetchXmlQuery(`<fetch><entity name="${recordType.entity}">
+          <attribute name="${recordType.name}" />
+          ${recordType.table ? `<attribute name="${recordType.table}" />` : ''}
+          <filter><condition attribute="${recordType.id}" operator="eq" value="${escapeXml(id)}" /></filter>
+        </entity></fetch>`);
+        const record = records[0];
+        if (!record || !asString(record[recordType.name])) throw new Error('Dataverse did not return the component name.');
+        return { name: asString(record[recordType.name]), table: recordType.table ? asString(record[recordType.table]) || undefined : undefined };
+      } catch (error) {
+        warnings.push(warningMessage(`Import dependency label for ${dependencyComponentType(type)} ${id} could not be resolved; the component ID is retained`, error));
+        return { name: id, table };
+      }
+    })();
+    labels.set(key, promise);
+    return promise;
+  };
+  const dependencies: MissingDependency[] = [];
+  for (const row of rows) {
+    const dependentId = asString(row.dependentcomponentobjectid);
+    const requiredId = asString(row.requiredcomponentobjectid);
+    const dependentType = asNumber(row.dependentcomponenttype, -1);
+    const requiredType = asNumber(row.requiredcomponenttype, -1);
+    if (!dependentId || !requiredId || dependentType < 0 || requiredType < 0) {
+      throw new Error('Dataverse returned an invalid RetrieveMissingDependencies record; import dependency results are incomplete.');
+    }
+    const dependent = await resolve(dependentType, dependentId, asString(row.dependentcomponentparentid));
+    const required = await resolve(requiredType, requiredId, asString(row.requiredcomponentparentid));
+    dependencies.push({
+      dependentName: dependent.name, dependentType: dependencyComponentType(dependentType), dependentId,
+      requiredName: required.name, requiredType: dependencyComponentType(requiredType), requiredId,
+      tableLogicalNames: dependent.table ? [dependent.table] : [], solutionUniqueName,
+    });
+  }
+  return dependencies;
+}
+
 export async function buildParsedSolutionFromDataverse(
   solutionId: string,
   onProgress?: (update: DataverseProgressUpdate) => void,
@@ -1798,7 +1974,7 @@ export async function buildParsedSolutionFromDataverse(
   });
 
   update('Preparing markdown source model...', 95);
-  return {
+  const parsed: ParsedSolution = {
     collectionPolicy,
     metadata,
     entities: scopedEntities,
@@ -1828,4 +2004,12 @@ export async function buildParsedSolutionFromDataverse(
     } : undefined,
     warnings,
   };
+  try {
+    update('Reading solution installation/import prerequisites...', 97);
+    parsed.missingDependencies = await fetchMissingDependencies(metadata.uniqueName, warnings);
+  } catch (error) {
+    parsed.missingDependenciesError = warningMessage(`Installation/import dependencies for solution ${metadata.uniqueName || solutionId} could not be retrieved`, error);
+    warnings.push(parsed.missingDependenciesError);
+  }
+  return parsed;
 }

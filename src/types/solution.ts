@@ -259,6 +259,50 @@ export interface EntityDefinition extends NamedItem {
   entitySetName?: string;
   /** Logical name of the primary name attribute */
   primaryAttributeName?: string;
+  /** Where the table metadata came from (determines which properties can be known) */
+  metadataSource?: 'local' | 'dataverse';
+  /** Table type: Standard, Activity, Elastic, Virtual */
+  tableType?: string;
+  /** Enable attachments (notes and files) */
+  hasNotes?: boolean;
+  /** Can be regarding of an activity ("Creating a new activity") */
+  hasActivities?: boolean;
+  /** Duplicate detection enabled */
+  isDuplicateDetectionEnabled?: boolean;
+  /** Auditing enabled on the table */
+  isAuditEnabled?: boolean;
+  /** Quick Create forms enabled */
+  isQuickCreateEnabled?: boolean;
+  /** Custom help enabled */
+  entityHelpUrlEnabled?: boolean;
+  /** Custom help URL */
+  entityHelpUrl?: string;
+  /** Long-term data retention enabled */
+  isRetentionEnabled?: boolean;
+  /** Rows can be an activity party ("Sending email") */
+  isActivityParty?: boolean;
+  /** OneNote integration enabled */
+  isOneNoteIntegrationEnabled?: boolean;
+  /** Mail merge enabled */
+  isMailMergeEnabled?: boolean;
+  /** SharePoint document management enabled */
+  isDocumentManagementEnabled?: boolean;
+  /** Connections enabled */
+  isConnectionsEnabled?: boolean;
+  /** Has a contact email address column */
+  hasEmailAddresses?: boolean;
+  /** Auto-create access teams */
+  autoCreateAccessTeams?: boolean;
+  /** Feedback enabled */
+  hasFeedback?: boolean;
+  /** Appear in search results (Dataverse search) */
+  syncToExternalSearchIndex?: boolean;
+  /** Can be taken offline */
+  isAvailableOffline?: boolean;
+  /** Can be added to a queue */
+  isValidForQueue?: boolean;
+  /** Move rows to the owner's default queue on create/assign */
+  autoRouteToOwnerQueue?: boolean;
   /**
    * True when this entity was appended from Dataverse metadata to provide
    * cross-solution reference context.  It is NOT a component of the solution
@@ -680,6 +724,15 @@ export interface DataverseDependencyEdge {
   requiredType: string;
 }
 
+/** An import prerequisite declared by a ZIP manifest or solution-specific Dataverse dependency response. */
+export interface MissingDependency extends DataverseDependencyEdge {
+  tableLogicalNames: string[];
+  requiredParent?: string;
+  dependentId?: string;
+  requiredId?: string;
+  solutionUniqueName?: string;
+}
+
 /**
  * Policy controlling how connected Dataverse data is enumerated for a solution.
  */
@@ -722,6 +775,12 @@ export interface SolutionMetadata {
  * This is the central data model passed to the Markdown generator.
  */
 export interface ParsedSolution {
+  /** Authoritative per-solution installation/import dependencies, never inferred from runtime metadata. */
+  missingDependencies?: MissingDependency[];
+  /** An explicit collection failure; do not present an empty dependency list as success. */
+  missingDependenciesError?: string;
+  /** Source solution names represented by a consolidated report. */
+  dependencySolutionUniqueNames?: string[];
   /** Collection policy used when the solution was read. */
   collectionPolicy?: SolutionCollectionPolicy;
   /** Metadata from solution.xml */
