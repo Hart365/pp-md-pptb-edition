@@ -1,36 +1,429 @@
 {
-  "$comment": "Dataverse solutioncomponent.componenttype routing map. Source: Microsoft Learn solutioncomponent reference. Verified 2026-09-03.",
-  "version": "1.0.0",
+  "$comment": "UK English display labels for public solution component codes. API identifiers remain unchanged; sections and primary flags are local reporting groupings. Extended codes are resolved against active environment metadata.",
+  "version": "1.2.0",
   "rootComponentBehavior": {
     "0": "Include Subcomponents",
     "1": "Do not include subcomponents",
     "2": "Include As Shell Only"
   },
   "componentTypes": [
-    { "value": 1, "label": "Entity", "table": "EntityDefinitions", "idField": "MetadataId", "section": "tables", "primary": true },
-    { "value": 9, "label": "Option Set", "table": "GlobalOptionSetDefinitions", "idField": "MetadataId", "section": "choices", "primary": true },
-    { "value": 20, "label": "Role", "table": "roles", "idField": "roleid", "section": "security", "primary": true },
-    { "value": 24, "label": "Form", "table": "systemforms", "idField": "formid", "section": "formsViews" },
-    { "value": 26, "label": "Saved Query", "table": "savedqueries", "idField": "savedqueryid", "section": "formsViews", "primary": true },
-    { "value": 29, "label": "Workflow", "table": "workflows", "idField": "workflowid", "section": "processes", "primary": true },
-    { "value": 31, "label": "Report", "table": "reports", "idField": "reportid", "section": "reports", "primary": true },
-    { "value": 60, "label": "System Form", "table": "systemforms", "idField": "formid", "section": "formsViews", "primary": true },
-    { "value": 61, "label": "Web Resource", "table": "webresourceset", "idField": "webresourceid", "section": "webResources", "primary": true },
-    { "value": 70, "label": "Field Security Profile", "table": "fieldsecurityprofiles", "idField": "fieldsecurityprofileid", "section": "security", "primary": true },
-    { "value": 90, "label": "Plugin Type", "table": "plugintypes", "idField": "plugintypeid", "section": "plugins", "primary": true },
-    { "value": 91, "label": "Plugin Assembly", "table": "pluginassemblies", "idField": "pluginassemblyid", "section": "plugins", "primary": true },
-    { "value": 92, "label": "SDK Message Processing Step", "table": "sdkmessageprocessingsteps", "idField": "sdkmessageprocessingstepid", "section": "plugins", "primary": true },
-    { "value": 93, "label": "SDK Message Processing Step Image", "table": "sdkmessageprocessingstepimages", "idField": "sdkmessageprocessingstepimageid", "section": "plugins" },
-    { "value": 95, "label": "Service Endpoint", "table": "serviceendpoints", "idField": "serviceendpointid", "section": "integration" },
-    { "value": 300, "label": "Canvas App", "table": "canvasapps", "idField": "canvasappid", "section": "apps", "primary": true },
-    { "value": 371, "label": "Connector", "table": "connectors", "idField": "connectorid", "section": "integration" },
-    { "value": 372, "label": "Connector", "table": "connectors", "idField": "connectorid", "section": "integration" },
-    { "value": 380, "label": "Environment Variable Definition", "table": "environmentvariabledefinitions", "idField": "environmentvariabledefinitionid", "section": "integration", "primary": true },
-    { "value": 381, "label": "Environment Variable Value", "table": "environmentvariablevalues", "idField": "environmentvariablevalueid", "section": "integration" }
+    {
+      "value": 1,
+      "label": "Entity",
+      "section": "tables",
+      "primary": true
+    },
+    {
+      "value": 2,
+      "label": "Attribute",
+      "section": "tables",
+      "primary": true
+    },
+    {
+      "value": 3,
+      "label": "Relationship",
+      "section": "tables"
+    },
+    {
+      "value": 4,
+      "label": "Attribute Picklist Value",
+      "section": "choices"
+    },
+    {
+      "value": 5,
+      "label": "Attribute Lookup Value",
+      "section": "tables"
+    },
+    {
+      "value": 6,
+      "label": "View Attribute",
+      "section": "formsViews"
+    },
+    {
+      "value": 7,
+      "label": "Localised Label",
+      "section": "metadata"
+    },
+    {
+      "value": 8,
+      "label": "Relationship Extra Condition",
+      "section": "tables"
+    },
+    {
+      "value": 9,
+      "label": "Option Set",
+      "section": "choices",
+      "primary": true
+    },
+    {
+      "value": 10,
+      "label": "Entity Relationship",
+      "section": "tables"
+    },
+    {
+      "value": 11,
+      "label": "Entity Relationship Role",
+      "section": "tables"
+    },
+    {
+      "value": 12,
+      "label": "Entity Relationship Relationships",
+      "section": "tables"
+    },
+    {
+      "value": 13,
+      "label": "Managed Property",
+      "section": "metadata"
+    },
+    {
+      "value": 14,
+      "label": "Entity Key",
+      "section": "tables"
+    },
+    {
+      "value": 16,
+      "label": "Privilege",
+      "section": "security"
+    },
+    {
+      "value": 17,
+      "label": "PrivilegeObjectTypeCode",
+      "section": "security"
+    },
+    {
+      "value": 18,
+      "label": "Index",
+      "section": "tables"
+    },
+    {
+      "value": 20,
+      "label": "Role",
+      "section": "security",
+      "primary": true
+    },
+    {
+      "value": 21,
+      "label": "Role Privilege",
+      "section": "security"
+    },
+    {
+      "value": 22,
+      "label": "Display String",
+      "section": "metadata"
+    },
+    {
+      "value": 23,
+      "label": "Display String Map",
+      "section": "metadata"
+    },
+    {
+      "value": 24,
+      "label": "Form",
+      "section": "formsViews",
+      "primary": true
+    },
+    {
+      "value": 25,
+      "label": "Organisation",
+      "section": "environment"
+    },
+    {
+      "value": 26,
+      "label": "Saved Query",
+      "section": "formsViews",
+      "primary": true
+    },
+    {
+      "value": 29,
+      "label": "Workflow",
+      "section": "processes",
+      "primary": true
+    },
+    {
+      "value": 31,
+      "label": "Report",
+      "section": "reports",
+      "primary": true
+    },
+    {
+      "value": 32,
+      "label": "Report Entity",
+      "section": "reports"
+    },
+    {
+      "value": 33,
+      "label": "Report Category",
+      "section": "reports"
+    },
+    {
+      "value": 34,
+      "label": "Report Visibility",
+      "section": "reports"
+    },
+    {
+      "value": 35,
+      "label": "Attachment",
+      "section": "email"
+    },
+    {
+      "value": 36,
+      "label": "Email Template",
+      "section": "email",
+      "primary": true
+    },
+    {
+      "value": 37,
+      "label": "Contract Template",
+      "section": "contracts"
+    },
+    {
+      "value": 38,
+      "label": "KB Article Template",
+      "section": "knowledge"
+    },
+    {
+      "value": 39,
+      "label": "Mail Merge Template",
+      "section": "mailMerge"
+    },
+    {
+      "value": 44,
+      "label": "Duplicate Rule",
+      "section": "dataQuality"
+    },
+    {
+      "value": 45,
+      "label": "Duplicate Rule Condition",
+      "section": "dataQuality"
+    },
+    {
+      "value": 46,
+      "label": "Entity Map",
+      "section": "dataImport"
+    },
+    {
+      "value": 47,
+      "label": "Attribute Map",
+      "section": "dataImport"
+    },
+    {
+      "value": 48,
+      "label": "Ribbon Command",
+      "section": "customization"
+    },
+    {
+      "value": 49,
+      "label": "Ribbon Context Group",
+      "section": "customization"
+    },
+    {
+      "value": 50,
+      "label": "Ribbon Customisation",
+      "section": "customization"
+    },
+    {
+      "value": 52,
+      "label": "Ribbon Rule",
+      "section": "customization"
+    },
+    {
+      "value": 53,
+      "label": "Ribbon Tab To Command Map",
+      "section": "customization"
+    },
+    {
+      "value": 55,
+      "label": "Ribbon Diff",
+      "section": "customization"
+    },
+    {
+      "value": 59,
+      "label": "Saved Query Visualisation",
+      "section": "formsViews"
+    },
+    {
+      "value": 60,
+      "label": "System Form",
+      "section": "formsViews",
+      "primary": true
+    },
+    {
+      "value": 61,
+      "label": "Web Resource",
+      "section": "webResources",
+      "primary": true
+    },
+    {
+      "value": 62,
+      "label": "Site Map",
+      "section": "solutionComponents",
+      "primary": true
+    },
+    {
+      "value": 63,
+      "label": "Connection Role",
+      "section": "integration"
+    },
+    {
+      "value": 64,
+      "label": "Complex Control",
+      "section": "customization"
+    },
+    {
+      "value": 65,
+      "label": "Hierarchy Rule",
+      "section": "customization"
+    },
+    {
+      "value": 66,
+      "label": "Custom Control",
+      "section": "customization"
+    },
+    {
+      "value": 68,
+      "label": "Custom Control Default Config",
+      "section": "customization"
+    },
+    {
+      "value": 70,
+      "label": "Field Security Profile",
+      "section": "security",
+      "primary": true
+    },
+    {
+      "value": 71,
+      "label": "Field Permission",
+      "section": "security"
+    },
+    {
+      "value": 80,
+      "label": "App Module",
+      "section": "apps",
+      "primary": true
+    },
+    {
+      "value": 90,
+      "label": "Plugin Type",
+      "section": "plugins",
+      "primary": true
+    },
+    {
+      "value": 91,
+      "label": "Plugin Assembly",
+      "section": "plugins",
+      "primary": true
+    },
+    {
+      "value": 92,
+      "label": "SDK Message Processing Step",
+      "section": "plugins",
+      "primary": true
+    },
+    {
+      "value": 93,
+      "label": "SDK Message Processing Step Image",
+      "section": "plugins"
+    },
+    {
+      "value": 95,
+      "label": "Service Endpoint",
+      "section": "integration"
+    },
+    {
+      "value": 150,
+      "label": "Routing Rule",
+      "section": "serviceManagement"
+    },
+    {
+      "value": 151,
+      "label": "Routing Rule Item",
+      "section": "serviceManagement"
+    },
+    {
+      "value": 152,
+      "label": "SLA",
+      "section": "serviceManagement"
+    },
+    {
+      "value": 153,
+      "label": "SLA Item",
+      "section": "serviceManagement"
+    },
+    {
+      "value": 154,
+      "label": "Convert Rule",
+      "section": "serviceManagement"
+    },
+    {
+      "value": 155,
+      "label": "Convert Rule Item",
+      "section": "serviceManagement"
+    },
+    {
+      "value": 161,
+      "label": "Mobile Offline Profile",
+      "section": "offline"
+    },
+    {
+      "value": 162,
+      "label": "Mobile Offline Profile Item",
+      "section": "offline"
+    },
+    {
+      "value": 300,
+      "label": "Canvas App",
+      "section": "apps",
+      "primary": true
+    },
+    {
+      "value": 371,
+      "label": "Connector",
+      "section": "integration"
+    },
+    {
+      "value": 372,
+      "label": "Connector",
+      "section": "integration"
+    },
+    {
+      "value": 380,
+      "label": "Environment Variable Definition",
+      "section": "integration",
+      "primary": true
+    },
+    {
+      "value": 381,
+      "label": "Environment Variable Value",
+      "section": "integration"
+    },
+    {
+      "value": 430,
+      "label": "Entity Analytics Configuration",
+      "section": "analytics"
+    },
+    {
+      "value": 431,
+      "label": "Attribute Image Configuration",
+      "section": "solutionComponents"
+    },
+    {
+      "value": 432,
+      "label": "Entity Image Configuration",
+      "section": "solutionComponents"
+    },
+    {
+      "value": 10039,
+      "label": "Connection Reference",
+      "section": "integration",
+      "primary": true
+    }
   ],
   "notes": {
-    "connectionReference": "Connection references are queried by solution ID; they are not a distinct component type.",
+    "connectionReference": "Connection references can be solution-owned records and component type 10039.",
+    "extendedTypes": "Types including 10084, 10087, 10164, and 10350 resolve through EntityDefinitions.ObjectTypeCode, DisplayName, LogicalName, PrimaryIdAttribute, and PrimaryNameAttribute. Read only the selected component IDs and explicit readable, non-secured configuration fields. Retain an error if metadata or the actual selected record cannot be resolved.",
     "workflowCategory": "Component type 29 covers workflows, business rules, BPFs, cloud flows, desktop flows, and AI flows; route by workflow.category.",
-    "unknown": "Retain unrecognised component types in inventory and emit a warning rather than discarding them."
+    "unknown": "Retain unrecognised component types in inventory and emit a warning rather than discarding them.",
+    "collectorScope": "Component type labels do not imply a supported Dataverse table route. Collectors should use authoritative metadata or endpoint schemas and read only selected component IDs.",
+    "emailTemplate": "Component type 36 reads selected template names, subjects, table types, and language codes; it does not retrieve template body content."
   }
 }

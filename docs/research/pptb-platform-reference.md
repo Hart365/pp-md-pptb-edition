@@ -1,27 +1,65 @@
-# PPTB Platform Reference
+# Power Platform ToolBox Platform Reference
 
-Source: Power Platform ToolBox tool-development documentation. Verified 2026-09-03.
+This reference separates repository-verified behaviour from host behaviour that must be checked against the installed Power Platform ToolBox (PPTB) version. Repository observations were checked against the 1.2.0 source on 2026-10-23. They are not a substitute for the host's current API documentation or a host-level test.
 
-## Architecture [DOC]
+## Repository-Verified Integration
 
-Tools run in sandboxed iframes. The host injects `window.toolboxAPI`, `window.dataverseAPI`, and `window.powerplatformAPI`. Do not handle tokens; use the injected clients. Declare only CSP exceptions required by runtime network features; PP-MD uses one optional `api.github.com` exception for its user-initiated update check. Dependencies, including Mermaid, are bundled locally and need no external network access.
+### Runtime and manifest
 
-## Connections [DOC]
+- `package.json` declares the PPTB package entry point as `index.html`, an optional connection requirement, and a minimum API version of `1.2.2`.
+- `src/api/toolboxAPI.ts` detects the PPTB runtime and wraps injected `toolboxAPI` and `dataverseAPI` services.
+- The application is built by Vite for the PPTB web-tool package. The current project does not ship an Electron main process.
+- The manifest's `multiConnection` setting is `none`; the current tool is not configured for selecting primary and secondary connections.
 
-Use `toolboxAPI.connections.getActiveConnection()` and, where multi-connection support is enabled, `getSecondaryConnection()`. Every Dataverse call takes a trailing `connectionTarget` of `primary` or `secondary`; thread it through every collector. A connection must have `enabledForPowerPlatformAPI` before calling `powerplatformAPI`.
+See [`package.json`](../../package.json), [`src/api/toolboxAPI.ts`](../../src/api/toolboxAPI.ts), and the [high-level design](../high-level-design.md).
 
-## Manifest [DOC]
+### Connections and Dataverse
 
-Require scoped `name`, semver `version`, `displayName`, `description`, `main`, top-level `icon`, `license`, contributors, `configurations.repository`, and `configurations.readmeUrl`. Set `features.connectionRequirement` to `optional` for tools that also run without Dataverse, and set `features.minAPI` to the lowest host API version required. The icon is relative to `dist` and must be a valid SVG with a `viewBox`. PP-MD ships its full-colour icon at `icons/pp-md.svg`; a monochrome `currentColor` icon was tried in 1.1.6 and did not render visibly in PPTB, so it was reverted. PPTB serves the icon as `pptb-webview://<toolId>/<icon>` from `<tool path>/dist/` and renders it as a CSS mask, so only its shape is shown. Known host bug (PPTB `main` and `dev`, checked 2026-10): the host UI runs from `file://`, CSS `mask-image` loads in CORS mode, and `pptb-webview` is registered with `corsEnabled: false`, so Chromium blocks every relative SVG tool icon (console: "Access to image at 'pptb-webview://…' from origin 'file://' has been blocked by CORS policy"). The `new Image()` fallback probe is not CORS-mode, so it succeeds and the icon area stays blank instead of falling back. This affects all tools with relative SVG icons and cannot be fixed tool-side: PPTB validation rejects HTTP(S) icon URLs and the resolver ignores `data:` URIs. Keep the manifest compliant and track the host fix (CORS-enable the scheme and add `Access-Control-Allow-Origin`, or render with `<img>`, or probe with `crossOrigin = "anonymous"`). Run `npm run validate` before release and use `npm run validate:offline` in CI to avoid transient URL-check failures.
+- The application obtains the active connection through `toolboxAPI.connections.getActiveConnection()`.
+- Connected collection uses Dataverse services through the host adapter in `src/api/toolboxAPI.ts` and the collector in `src/dataverse/solutionService.ts`.
+- The default collection policy is `solutionOnly`; bounded direct-reference enrichment and the `environmentAppendix` policy are also available. The Environment Appendix is rendered only in the consolidated All Selected Solutions document. Availability and completeness depend on the connection, permissions, and accessible Dataverse metadata.
+- The current collector uses `getAllEntitiesMetadata` to resolve selected entity metadata IDs. It does not append the full metadata catalogue to the generated solution inventory.
+- Connected results can be incomplete when an artefact type or endpoint is unavailable. Such conditions should be presented as a warning or capability limitation, not as proof that the artefact does not exist.
+- Global option-set definitions are retrieved by the selected solution's metadata IDs. Email-template metadata (excluding body content), site maps, and image configurations have explicit collectors; extended record components are resolved through the environment's table metadata and read only for their selected IDs.
 
-## Settings, Files, Themes [DOC]
+For supported component routing and query guidance, see the [Dataverse retrieval reference](dataverse-retrieval-reference.md) and [solution component type map](solution-component-types.json).
 
-Persist preferences through `toolboxAPI.settings` using namespaced keys, never localStorage. Export with `toolboxAPI.fileSystem.saveFile()`. Drive light/dark themes from `toolboxAPI.utils.getCurrentTheme()` and handle `settings:updated` events. Register host event listeners once and multiplex subscribers.
+### Settings, theme, and file saving
 
-## Error Handling [DOC]
+- In PPTB, the app uses namespaced `toolboxAPI.settings` values for saved configuration and collection preferences.
+- Browser development falls back to localStorage for supported preferences; this fallback is not the persistence mechanism used in PPTB.
+- The active host theme is read through the host utility. Browser development follows the OS preference; the in-app theme toggle is disabled inside PPTB.
+- Exports use the host file-system save API when running in PPTB and browser download fallbacks in local development.
 
-Documentation collection must continue after a component failure and surface failures in the Warnings section. Retry only HTTP 429 with backoff. Map 401 to reconnect guidance, 403 to permissions, and 429 to a retry message. Never display stack traces. Never render secret environment-variable values or secure plug-in configuration.
+Host API availability, save-dialog behaviour, and large-file handling must be validated in the target PPTB release. The repository's unit tests do not emulate the host.
 
-## Build And Test [DOC]
+## Security and Privacy Boundaries
 
-Run `npm run build`, then use PPTB Debug > Load Local Tool and select the tool root. Vite tools must emit relative asset URLs and a single classic IIFE bundle; PPTB's sandboxed iframe does not reliably load Vite's default ES-module output. With Vite 8 (Rolldown), output options must live under `build.rolldownOptions.output` (`format: 'iife'`, `codeSplitting: false`); settings under `build.rollupOptions.output` are overridden and silently produce an ES-module bundle. Any `import.meta` left in a classic script is a SyntaxError that leaves a blank white screen, so `vite.config.ts` polyfills `import.meta.url`/`import.meta.resolve` from `document.currentScript.src`, and `npm run validate:dist` fails if the bundle contains `import.meta` or does not parse as a classic script. Reload the tool tab after changes. PDF export has no documented iframe API and needs a separate print/export design.
+- The tool does not handle Dataverse authentication tokens directly.
+- Local ZIP parsing and document generation run in the client application. Dataverse Connected mode necessarily sends read requests through the active host connection.
+- The collector does not retrieve, retain, or render live environment-variable values. A server-side non-null filter establishes current-value presence; lookup IDs are normalised across Web API and SDK response formats. Failed checks are reported as unknown. Secure plug-in configuration is excluded from documentation.
+- The package manifest and `index.html` contain network/CSP configuration for the optional GitHub release update check. Core generation does not depend on GitHub availability.
+
+These are implementation statements, not a certification of the host's isolation, permission enforcement, or the security of every exported document.
+
+## Build and Validation
+
+The repository-defined build and checks are:
+
+```powershell
+npm.cmd run build
+npm.cmd run validate:offline
+npm.cmd run validate:dist
+npm.cmd test
+```
+
+`npm run validate` also invokes the PPTB package validator with its network checks. `npm test` runs the offline package validation, lint, TypeScript, unit tests, contrast audit, build, and distribution validation. Check [`package.json`](../../package.json) for the authoritative current scripts. After building, loading the package through PPTB's local-tool workflow and exercising both input modes and export paths remains a host-validation step.
+
+## Host Validation and Known Limitations
+
+- Verify active-connection behaviour, permissions, settings persistence, theme synchronisation, and exports in the PPTB version used for release.
+- Verify host-side screen-reader behaviour, forced-colours mode, zoom/reflow, and keyboard interactions; these are not covered by the repository's test runner.
+- A blank tool icon has been reported for some PPTB installations. Its cause and applicability to a given host build are not confirmed by this repository; check the current host and avoid assuming a tool-side workaround.
+- The `powerplatformAPI` environment-management service is used only by the Environment Appendix collector and only when `connection.enabledForPowerPlatformAPI` is true. Without it, the appendix records a note and uses Dataverse data only. Response shapes should be confirmed against the target PPTB version.
+
+Where host behaviour differs by version or tenant, report it as a host-validation result or known limitation with the tested version; do not infer general platform support from one environment.

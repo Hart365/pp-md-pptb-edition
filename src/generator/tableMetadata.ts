@@ -42,7 +42,7 @@ function yesNo(entity: EntityDefinition, value: boolean | undefined, localExport
 function ownershipLabel(entity: EntityDefinition): string {
   switch (entity.ownershipType) {
     case 'User': return 'User or team';
-    case 'Organization': return 'Organization';
+    case 'Organization': return 'Organisation';
     case 'None': return 'None';
     default: return unavailable(missingReason(entity, true));
   }

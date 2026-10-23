@@ -20,6 +20,7 @@ import {
   slugifyHeading,
   svgToPngDataUrl,
 } from '../../api/documentRendering';
+import { copyToClipboard } from '../../api/toolboxAPI';
 
 export { extractText, slugifyHeading } from '../../api/documentRendering';
 
@@ -246,7 +247,7 @@ export function MarkdownViewer({ markdown, title, onExport, onExportHtml, onExpo
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(markdown);
+      await copyToClipboard(markdown);
       setCopyMsg('Copied!');
       setTimeout(() => setCopyMsg(''), 2000);
     } catch {

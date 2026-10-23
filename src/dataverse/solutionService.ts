@@ -11,9 +11,7 @@ import type {
   DashboardDefinition,
   DataflowDefinition,
   DesktopFlowDefinition,
-  EntityAttribute,
   EntityDefinition,
-  EntityRelationship,
   EnvironmentVariableDefinition,
   FieldSecurityProfileDefinition,
   FormDefinition,
@@ -31,17 +29,27 @@ import type {
   WebResourceDefinition,
   ConnectionReferenceDefinition,
   DataverseCustomApiDefinition,
-  DataverseDependencyEdge,
   SolutionCollectionPolicy,
-  MissingDependency,
 } from '../types/solution';
 import {
   AppType,
-  AttributeType,
   ProcessCategory,
   WebResourceType,
 } from '../types/solution';
-import { dependencyComponentType } from '../generator/missingDependencies';
+import {
+  asBoolean, asNumber, asString, buildInConditions, escapeXml,
+  fetchXmlQuery, fetchXmlQueryForIds, firstNonEmptyString, isCollectionCancelledError, queryDataverse, queryDataverseWithFallback, referenceId,
+  solutionComponentLink, throwIfDataverseCollectionCancelled, warningMessage,
+} from './dataverseClient';
+import { fetchSolutionComponentDetails } from './componentCollectors';
+import { ENTITY_METADATA_CONCURRENCY, buildEntityDefinition, getEntityLogicalNamesForSolution } from './entityCollector';
+import { collectDataverseDependencyEdgesFromSolution, fetchMissingDependencies } from './dependencyCollector';
+
+// Re-exported so existing imports of the orchestrator module remain stable after the module split.
+export { asOptionalBoolean, DataverseCollectionCancelledError, isCollectionCancelledError, withDataverseAbortSignal } from './dataverseClient';
+export { normalizeOwnershipType, buildEntityDefinition } from './entityCollector';
+export { fetchSolutionComponentDetails } from './componentCollectors';
+export { collectDataverseDependencyEdgesFromSolution, fetchMissingDependencies } from './dependencyCollector';
 
 export interface DataverseSolutionSummary {
   solutionId: string;
@@ -57,419 +65,6 @@ export interface DataverseSolutionSummary {
 export interface DataverseProgressUpdate {
   message: string;
   percent: number;
-}
-
-const ENTITY_PROPERTIES = [
-  'MetadataId',
-  'LogicalName',
-  'DisplayName',
-  'Description',
-  'ObjectTypeCode',
-  'IsCustomEntity',
-  'IsIntersect',
-  'IsActivity',
-  'ChangeTrackingEnabled',
-  'OwnershipType',
-  'EntitySetName',
-  'PrimaryNameAttribute',
-] as const;
-
-// Table-property flags shown on the XLSX table metadata header. Requested
-// separately so an unsupported property on older orgs cannot break the base fetch.
-const EXTENDED_ENTITY_PROPERTIES = [
-  'TableType',
-  'HasNotes',
-  'HasActivities',
-  'HasFeedback',
-  'HasEmailAddresses',
-  'IsAuditEnabled',
-  'IsDuplicateDetectionEnabled',
-  'IsQuickCreateEnabled',
-  'EntityHelpUrlEnabled',
-  'EntityHelpUrl',
-  'IsRetentionEnabled',
-  'IsActivityParty',
-  'IsOneNoteIntegrationEnabled',
-  'IsMailMergeEnabled',
-  'IsDocumentManagementEnabled',
-  'IsConnectionsEnabled',
-  'AutoCreateAccessTeams',
-  'SyncToExternalSearchIndex',
-  'IsAvailableOffline',
-  'IsValidForQueue',
-  'AutoRouteToOwnerQueue',
-] as const;
-
-const FETCH_XML_PAGE_SIZE = 5000;
-const FETCH_XML_MAX_PAGES = 20;
-const ODATA_MAX_ROWS = 5000;
-const MAX_SOLUTION_ENTITY_LOOKUPS = 500;
-const ENTITY_METADATA_BATCH_SIZE = 10;
-
-class DataverseResultLimitError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'DataverseResultLimitError';
-  }
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function asString(value: unknown, fallback = ''): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return fallback;
-}
-
-function asNumber(value: unknown, fallback = 0): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return fallback;
-}
-
-function asBoolean(value: unknown, fallback = false): boolean {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true' || normalized === '1') return true;
-    if (normalized === 'false' || normalized === '0') return false;
-  }
-  return fallback;
-}
-
-/** Reads plain booleans and BooleanManagedProperty ({ Value }) shapes; undefined when absent. */
-export function asOptionalBoolean(value: unknown): boolean | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === 'object' && 'Value' in (value as Record<string, unknown>)) {
-    return asOptionalBoolean((value as Record<string, unknown>).Value);
-  }
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true' || normalized === '1') return true;
-    if (normalized === 'false' || normalized === '0') return false;
-  }
-  return undefined;
-}
-
-/** Maps Dataverse OwnershipType values (UserOwned, OrganizationOwned, None, ...) to the shared shape. */
-export function normalizeOwnershipType(value: unknown): EntityDefinition['ownershipType'] {
-  const raw = asString(value).trim().toLowerCase();
-  if (!raw) return undefined;
-  if (raw.startsWith('user') || raw.startsWith('team')) return 'User';
-  if (raw.startsWith('org') || raw.startsWith('business')) return 'Organization';
-  if (raw === 'none') return 'None';
-  return undefined;
-}
-
-async function fetchEntityMetadata(logicalName: string): Promise<Record<string, unknown>> {
-  try {
-    return await window.dataverseAPI.getEntityMetadata(
-      logicalName, true, [...ENTITY_PROPERTIES, ...EXTENDED_ENTITY_PROPERTIES],
-    ) as Record<string, unknown>;
-  } catch {
-    return await window.dataverseAPI.getEntityMetadata(logicalName, true, [...ENTITY_PROPERTIES]) as Record<string, unknown>;
-  }
-}
-
-function asArray<T>(value: unknown): T[] {
-  return Array.isArray(value) ? value as T[] : [];
-}
-
-function firstNonEmptyString(row: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = asString(row[key]).trim();
-    if (value) return value;
-  }
-  return '';
-}
-
-function getLabel(value: unknown, fallback = ''): string {
-  if (!value || typeof value !== 'object') return fallback;
-  const node = value as {
-    UserLocalizedLabel?: { Label?: string };
-    LocalizedLabels?: Array<{ Label?: string }>;
-  };
-
-  return node.UserLocalizedLabel?.Label
-    ?? node.LocalizedLabels?.find((entry) => !!entry.Label)?.Label
-    ?? fallback;
-}
-
-function buildInConditions(attribute: string, ids: string[]): string {
-  if (ids.length === 0) return '';
-  const values = ids.map((id) => `<value>${escapeXml(id)}</value>`).join('');
-  return `<condition attribute="${attribute}" operator="in">${values}</condition>`;
-}
-
-/** Build the FetchXML join used to scope a component record to one solution. */
-function solutionComponentLink(solutionId: string, recordId: string, componentTypes: number[]): string {
-  const typeFilter = componentTypes.map((type) => `<value>${type}</value>`).join('');
-  return `<link-entity name="solutioncomponent" from="objectid" to="${recordId}" link-type="inner">
-    <filter type="and">
-      <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-      <condition attribute="componenttype" operator="in">${typeFilter}</condition>
-    </filter>
-  </link-entity>`;
-}
-
-function withFetchXmlPage(fetchXml: string, page: number, pagingCookie?: string): string {
-  const match = /<fetch\b([^>]*)>/i.exec(fetchXml);
-  if (!match) throw new Error('Invalid FetchXML: missing fetch root element.');
-
-  const attributes = match[1].replace(/\s+(?:count|page|paging-cookie)\s*=\s*(?:"[^"]*"|'[^']*')/gi, '');
-  const pagingAttributes = [`count="${FETCH_XML_PAGE_SIZE}"`, `page="${page}"`];
-  if (pagingCookie) pagingAttributes.push(`paging-cookie="${escapeXml(pagingCookie)}"`);
-
-  return fetchXml.replace(match[0], `<fetch${attributes} ${pagingAttributes.join(' ')}>`);
-}
-
-async function fetchXmlQuery(fetchXml: string): Promise<Record<string, unknown>[]> {
-  const fetchRoot = /<fetch\b([^>]*)>/i.exec(fetchXml);
-  if (!fetchRoot) throw new Error('Invalid FetchXML: missing fetch root element.');
-  if (/\btop\s*=/i.test(fetchRoot[1])) {
-    const result = await window.dataverseAPI.fetchXmlQuery(fetchXml);
-    return result.value;
-  }
-
-  const rows: Record<string, unknown>[] = [];
-  let pagingCookie: string | undefined;
-  for (let page = 1; page <= FETCH_XML_MAX_PAGES; page += 1) {
-    const result = await window.dataverseAPI.fetchXmlQuery(withFetchXmlPage(fetchXml, page, pagingCookie));
-    rows.push(...result.value);
-    pagingCookie = result['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'];
-    if (!pagingCookie) return rows;
-  }
-
-  throw new DataverseResultLimitError(
-    `FetchXML results exceeded the ${FETCH_XML_PAGE_SIZE * FETCH_XML_MAX_PAGES}-row safety limit. Narrow the selected solution or collection scope.`,
-  );
-}
-
-/** Query a Dataverse entity set with explicit OData selection and filtering. */
-async function queryDataverse(odataQuery: string): Promise<Record<string, unknown>[]> {
-  const separator = odataQuery.includes('?') ? '&' : '?';
-  const boundedQuery = /(?:\?|&)\$top=/i.test(odataQuery)
-    ? odataQuery
-    : `${odataQuery}${separator}$top=${ODATA_MAX_ROWS}`;
-  const result = await window.dataverseAPI.queryData(boundedQuery);
-  if (result.value.length >= ODATA_MAX_ROWS) {
-    throw new DataverseResultLimitError(
-      `OData results reached the ${ODATA_MAX_ROWS}-row safety limit and may be incomplete. Narrow the selected solution or collection scope.`,
-    );
-  }
-  return result.value;
-}
-
-export function collectDataverseDependencyEdgesFromSolution(
-  solution: Pick<ParsedSolution, 'entities' | 'forms' | 'views' | 'apps' | 'processes' | 'connectionReferences' | 'environmentVariables' | 'pluginAssemblies'>,
-): DataverseDependencyEdge[] {
-  const runtimeEdges: DataverseDependencyEdge[] = [];
-
-  solution.forms.forEach((form) => {
-    if (form.entityLogicalName) {
-      runtimeEdges.push({
-        dependentName: form.displayName || form.name,
-        dependentType: 'Form',
-        requiredName: form.entityLogicalName,
-        requiredType: 'Table',
-      });
-    }
-  });
-
-  solution.views.forEach((view) => {
-    if (view.entityLogicalName) {
-      runtimeEdges.push({
-        dependentName: view.displayName || view.name,
-        dependentType: 'View',
-        requiredName: view.entityLogicalName,
-        requiredType: 'Table',
-      });
-    }
-  });
-
-  solution.apps.forEach((app) => {
-    const appName = app.displayName || app.name;
-    (app.entities ?? []).forEach((entityName) => {
-      runtimeEdges.push({
-        dependentName: appName,
-        dependentType: 'App',
-        requiredName: entityName,
-        requiredType: 'Table',
-      });
-    });
-
-    (app.connectors ?? []).forEach((connectorName) => {
-      runtimeEdges.push({
-        dependentName: appName,
-        dependentType: 'App',
-        requiredName: connectorName,
-        requiredType: 'Connector',
-      });
-    });
-  });
-
-  const connectionRefCandidates = solution.connectionReferences
-    .flatMap((reference) => [reference.name, reference.displayName])
-    .filter((value): value is string => !!value);
-  const envVarCandidates = solution.environmentVariables
-    .flatMap((envVar) => [envVar.schemaName, envVar.displayName])
-    .filter((value): value is string => !!value);
-
-  solution.processes.forEach((process) => {
-    const processName = process.displayName || process.name;
-    const relatedTables = [process.primaryEntity, ...(process.relatedEntities ?? [])].filter((value): value is string => !!value);
-
-    relatedTables.forEach((tableName) => {
-      runtimeEdges.push({
-        dependentName: processName,
-        dependentType: 'Process',
-        requiredName: tableName,
-        requiredType: 'Table',
-      });
-    });
-
-    const usedRefs = process.flowConnectionReferences?.length
-      ? process.flowConnectionReferences
-      : [];
-    usedRefs.forEach((referenceName) => {
-      runtimeEdges.push({
-        dependentName: processName,
-        dependentType: 'Process',
-        requiredName: referenceName,
-        requiredType: 'Connection Reference',
-      });
-    });
-
-    const usedEnvVars = process.flowEnvironmentVariables?.length
-      ? process.flowEnvironmentVariables
-      : [];
-    usedEnvVars.forEach((envVarName) => {
-      runtimeEdges.push({
-        dependentName: processName,
-        dependentType: 'Process',
-        requiredName: envVarName,
-        requiredType: 'Environment Variable',
-      });
-    });
-
-    if (process.flowDefinition && (process.flowConnectionReferences?.length ?? 0) === 0) {
-      const flowText = JSON.stringify(process.flowDefinition).toLowerCase();
-      connectionRefCandidates.filter((candidate) => flowText.includes(candidate.toLowerCase())).forEach((candidate) => {
-        runtimeEdges.push({
-          dependentName: processName,
-          dependentType: 'Process',
-          requiredName: candidate,
-          requiredType: 'Connection Reference',
-        });
-      });
-
-      envVarCandidates.filter((candidate) => flowText.includes(candidate.toLowerCase())).forEach((candidate) => {
-        runtimeEdges.push({
-          dependentName: processName,
-          dependentType: 'Process',
-          requiredName: candidate,
-          requiredType: 'Environment Variable',
-        });
-      });
-    }
-  });
-
-  solution.pluginAssemblies.forEach((assembly) => {
-    assembly.steps.forEach((step) => {
-      if (!step.primaryEntity) return;
-      runtimeEdges.push({
-        dependentName: `${assembly.assemblyName} :: ${step.name}`,
-        dependentType: 'Plugin Step',
-        requiredName: step.primaryEntity,
-        requiredType: 'Table',
-      });
-    });
-  });
-
-  const solutionTables = new Set(solution.entities.map((entity) => entity.logicalName.toLowerCase()));
-  const scopedEdges = runtimeEdges.filter((edge) => (
-    edge.requiredType !== 'Table' || solutionTables.has(edge.requiredName.toLowerCase())
-  ));
-
-  return Array.from(new Map(
-    scopedEdges.map((edge) => [`${edge.dependentType}|${edge.dependentName}|${edge.requiredType}|${edge.requiredName}`.toLowerCase(), edge]),
-  ).values());
-}
-
-async function queryDataverseWithFallback(
-  candidateQueries: string[],
-  section: string,
-  warnings: string[] = [],
-  warnOnFailure = true,
-): Promise<Record<string, unknown>[]> {
-  const errors: unknown[] = [];
-
-  for (const query of candidateQueries) {
-    try {
-      return await queryDataverse(query);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  const resultLimitError = errors.find((error) => error instanceof DataverseResultLimitError);
-  if (errors.length > 0 && warnings && (warnOnFailure || resultLimitError)) {
-    warnings.push(warningMessage(section, resultLimitError ?? errors[0]));
-  }
-
-  return [];
-}
-
-function warningMessage(section: string, error: unknown): string {
-  const message = error instanceof Error ? error.message : 'Unknown error';
-  return `${section}: ${message}`;
-}
-
-function optionLabel(option: Record<string, unknown>): { value: number; label: string; description?: string } {
-  return {
-    value: asNumber(option.Value),
-    label: getLabel(option.Label, asString(option.Value)),
-    description: getLabel(option.Description),
-  };
-}
-function mapAttributeType(type: string): AttributeType {
-  const normalized = type.toLowerCase();
-  const mapping: Record<string, AttributeType> = {
-    string: AttributeType.String,
-    memo: AttributeType.Memo,
-    integer: AttributeType.Integer,
-    bigint: AttributeType.BigInt,
-    decimal: AttributeType.Decimal,
-    money: AttributeType.Money,
-    boolean: AttributeType.Boolean,
-    datetime: AttributeType.DateTime,
-    lookup: AttributeType.Lookup,
-    picklist: AttributeType.OptionSet,
-    multiselectpicklist: AttributeType.MultiSelectOptionSet,
-    owner: AttributeType.Owner,
-    uniqueidentifier: AttributeType.UniqueIdentifier,
-    image: AttributeType.Image,
-    file: AttributeType.File,
-    customer: AttributeType.Customer,
-    partylist: AttributeType.PartyList,
-    managedproperty: AttributeType.ManagedProperty,
-    virtual: AttributeType.Virtual,
-  };
-
-  return mapping[normalized] ?? AttributeType.Unknown;
 }
 
 function mapWebResourceType(type: number): WebResourceType {
@@ -587,283 +182,6 @@ async function getSolutionMetadata(solutionId: string): Promise<SolutionMetadata
     isManaged: asBoolean(row.ismanaged),
   };
 }
-async function getEntityLogicalNamesForSolution(solutionId: string): Promise<string[]> {
-  const componentRows = await fetchXmlQuery(`
-    <fetch>
-      <entity name="solutioncomponent">
-        <attribute name="objectid" />
-        <filter>
-          <condition attribute="solutionid" operator="eq" value="${escapeXml(solutionId)}" />
-          <condition attribute="componenttype" operator="eq" value="1" />
-        </filter>
-      </entity>
-    </fetch>
-  `);
-
-  const ids = Array.from(new Set(componentRows.map((row) => asString(row.objectid)).filter(Boolean)));
-  if (ids.length === 0) return [];
-  if (ids.length > MAX_SOLUTION_ENTITY_LOOKUPS) {
-    throw new DataverseResultLimitError(
-      `The selected solution contains more than ${MAX_SOLUTION_ENTITY_LOOKUPS} table components. Narrow the selected solution before generating documentation.`,
-    );
-  }
-
-  const entities: Array<{ MetadataId: string; LogicalName: string; IsIntersect?: boolean }> = [];
-  for (let index = 0; index < ids.length; index += ENTITY_METADATA_BATCH_SIZE) {
-    const batch = ids.slice(index, index + ENTITY_METADATA_BATCH_SIZE);
-    const metadata = await Promise.all(batch.map((id) => (
-      window.dataverseAPI.getEntityMetadata(id, false, ['MetadataId', 'LogicalName', 'IsIntersect'])
-    )));
-    entities.push(...metadata);
-  }
-
-  return entities
-    .filter((entity) => !asBoolean(entity.IsIntersect))
-    .map((entity) => asString(entity.LogicalName))
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
-}
-
-interface TypedAttributeDetails {
-  lookupTargets: Map<string, string[]>;
-  optionSets: Map<string, Record<string, unknown>>;
-}
-
-const OPTION_SET_ATTRIBUTE_TYPES = [
-  'PicklistAttributeMetadata',
-  'MultiSelectPicklistAttributeMetadata',
-  'StateAttributeMetadata',
-  'StatusAttributeMetadata',
-] as const;
-
-/**
- * Query a type-cast attribute collection. The base Attributes endpoint cannot
- * return type-specific properties such as Targets or OptionSet, so these are
- * fetched separately. Failures are swallowed so analysis still completes.
- */
-async function queryTypedAttributes(logicalName: string, typeName: string, query: string): Promise<Record<string, unknown>[]> {
-  try {
-    const escaped = logicalName.replace(/'/g, "''");
-    const result = await window.dataverseAPI.queryData(
-      `EntityDefinitions(LogicalName='${escaped}')/Attributes/Microsoft.Dynamics.CRM.${typeName}?${query}`,
-    );
-    return asArray<Record<string, unknown>>(result?.value);
-  } catch {
-    return [];
-  }
-}
-
-async function fetchTypedAttributeDetails(logicalName: string): Promise<TypedAttributeDetails> {
-  const [lookupRows, ...optionSetRows] = await Promise.all([
-    queryTypedAttributes(logicalName, 'LookupAttributeMetadata', '$select=LogicalName,Targets'),
-    ...OPTION_SET_ATTRIBUTE_TYPES.map((typeName) => (
-      queryTypedAttributes(logicalName, typeName, '$select=LogicalName&$expand=OptionSet,GlobalOptionSet($select=Name)')
-    )),
-  ]);
-
-  const lookupTargets = new Map<string, string[]>();
-  for (const row of lookupRows) {
-    const name = asString(row.LogicalName);
-    const targets = asArray<string>(row.Targets).filter(Boolean);
-    if (name && targets.length > 0) lookupTargets.set(name.toLowerCase(), targets);
-  }
-
-  const optionSets = new Map<string, Record<string, unknown>>();
-  for (const row of optionSetRows.flat()) {
-    const name = asString(row.LogicalName);
-    if (!name) continue;
-    const optionSet = (row.OptionSet ?? {}) as Record<string, unknown>;
-    const globalOptionSet = row.GlobalOptionSet as Record<string, unknown> | undefined;
-    optionSets.set(name.toLowerCase(), {
-      ...optionSet,
-      Name: asString(optionSet.Name) || asString(globalOptionSet?.Name) || undefined,
-    });
-  }
-
-  return { lookupTargets, optionSets };
-}
-
-/** Build a map of lookup attribute -> referenced tables from ManyToOne relationships. */
-function lookupTargetsFromRelationships(logicalName: string, manyToOne: Record<string, unknown>[]): Map<string, string[]> {
-  const targets = new Map<string, string[]>();
-  for (const relationship of manyToOne) {
-    if (asString(relationship.ReferencingEntity).toLowerCase() !== logicalName.toLowerCase()) continue;
-    const attribute = asString(relationship.ReferencingAttribute).toLowerCase();
-    const referenced = asString(relationship.ReferencedEntity);
-    if (!attribute || !referenced) continue;
-    const existing = targets.get(attribute) ?? [];
-    if (!existing.includes(referenced)) existing.push(referenced);
-    targets.set(attribute, existing);
-  }
-  return targets;
-}
-
-export async function buildEntityDefinition(logicalName: string): Promise<EntityDefinition> {
-  const metadata = await fetchEntityMetadata(logicalName);
-  const [attributesResponse, oneToManyResponse, manyToOneResponse, manyToManyResponse, typedDetails] = await Promise.all([
-    // Only request properties that are valid for base AttributeMetadata.
-    // Type-specific properties (for example MaxLength on StringAttributeMetadata)
-    // can break this endpoint when requested against the base type.
-    window.dataverseAPI.getEntityRelatedMetadata(logicalName, 'Attributes', [
-      'LogicalName',
-      'DisplayName',
-      'Description',
-      'AttributeType',
-      'RequiredLevel',
-      'IsCustomAttribute',
-      'IsPrimaryName',
-      'IsAuditEnabled',
-      'IsValidForAdvancedFind',
-      'IsSecured',
-    ]),
-    window.dataverseAPI.getEntityRelatedMetadata(logicalName, 'OneToManyRelationships', [
-      'SchemaName',
-      'ReferencedEntity',
-      'ReferencingEntity',
-      'ReferencingAttribute',
-      'ReferencedAttribute',
-      'CascadeConfiguration',
-    ]),
-    window.dataverseAPI.getEntityRelatedMetadata(logicalName, 'ManyToOneRelationships', [
-      'SchemaName',
-      'ReferencedEntity',
-      'ReferencingEntity',
-      'ReferencingAttribute',
-      'ReferencedAttribute',
-      'CascadeConfiguration',
-    ]),
-    window.dataverseAPI.getEntityRelatedMetadata(logicalName, 'ManyToManyRelationships', [
-      'SchemaName',
-      'Entity1LogicalName',
-      'Entity2LogicalName',
-      'IntersectEntityName',
-    ]),
-    fetchTypedAttributeDetails(logicalName),
-  ]);
-
-  const relationshipLookupTargets = lookupTargetsFromRelationships(
-    logicalName,
-    asArray<Record<string, unknown>>(manyToOneResponse.value),
-  );
-
-  const attributes = asArray<Record<string, unknown>>(attributesResponse.value).map((attribute): EntityAttribute => {
-    const attributeKey = asString(attribute.LogicalName).toLowerCase();
-    const optionSet = (attribute.OptionSet as Record<string, unknown> | undefined)
-      ?? typedDetails.optionSets.get(attributeKey);
-    const options = asArray<Record<string, unknown>>(optionSet?.Options).map(optionLabel);
-    const directTargets = asArray<string>(attribute.Targets);
-    const targets = directTargets.length > 0
-      ? directTargets
-      : typedDetails.lookupTargets.get(attributeKey) ?? relationshipLookupTargets.get(attributeKey) ?? [];
-    const requiredValue = asString((attribute.RequiredLevel as { Value?: string } | undefined)?.Value);
-    const maxLength =
-      asNumber(attribute.MaxLength)
-      || asNumber((attribute as { StringAttributeMetadata?: { MaxLength?: unknown } }).StringAttributeMetadata?.MaxLength)
-      || undefined;
-    const precision =
-      asNumber(attribute.Precision)
-      || asNumber((attribute as { DecimalAttributeMetadata?: { Precision?: unknown } }).DecimalAttributeMetadata?.Precision)
-      || asNumber((attribute as { MoneyAttributeMetadata?: { Precision?: unknown } }).MoneyAttributeMetadata?.Precision)
-      || undefined;
-
-    return {
-      name: asString(attribute.LogicalName),
-      displayName: getLabel(attribute.DisplayName, asString(attribute.LogicalName)),
-      description: getLabel(attribute.Description),
-      type: mapAttributeType(asString(attribute.AttributeType)),
-      required: requiredValue === 'ApplicationRequired' || requiredValue === 'SystemRequired',
-      auditing: asBoolean(attribute.IsAuditEnabled),
-      maxLength,
-      precision,
-      lookupTarget: targets.length > 0 ? targets.join(', ') : undefined,
-      options: options.length > 0 ? options : undefined,
-      optionSetName: asString(optionSet?.Name) || undefined,
-      isCustom: asBoolean(attribute.IsCustomAttribute, true),
-      isPrimaryName: asBoolean(attribute.IsPrimaryName),
-      isAuditEnabled: asBoolean(attribute.IsAuditEnabled),
-      isValidForAdvancedFind: asBoolean((attribute.IsValidForAdvancedFind as { Value?: boolean } | undefined)?.Value, true),
-      isSecured: asBoolean(attribute.IsSecured),
-    };
-  });
-
-  const mapRelationship = (
-    relationship: Record<string, unknown>,
-    type: EntityRelationship['type'],
-    referencedEntity: string,
-    referencingEntity: string,
-  ): EntityRelationship => ({
-    name: asString(relationship.SchemaName),
-    type,
-    referencedEntity,
-    referencingEntity,
-    referencingAttribute: asString(relationship.ReferencingAttribute) || undefined,
-    referencedAttribute: asString(relationship.ReferencedAttribute) || undefined,
-    cascadeDelete: asString((relationship.CascadeConfiguration as Record<string, unknown> | undefined)?.Delete) || undefined,
-    cascadeAssign: asString((relationship.CascadeConfiguration as Record<string, unknown> | undefined)?.Assign) || undefined,
-    cascadeReparent: asString((relationship.CascadeConfiguration as Record<string, unknown> | undefined)?.Reparent) || undefined,
-  });
-
-  const relationships: EntityRelationship[] = [
-    ...asArray<Record<string, unknown>>(oneToManyResponse.value).map((relationship) => mapRelationship(
-      relationship,
-      'OneToMany',
-      asString(relationship.ReferencedEntity),
-      asString(relationship.ReferencingEntity),
-    )),
-    ...asArray<Record<string, unknown>>(manyToOneResponse.value).map((relationship) => mapRelationship(
-      relationship,
-      'ManyToOne',
-      asString(relationship.ReferencedEntity),
-      asString(relationship.ReferencingEntity),
-    )),
-    ...asArray<Record<string, unknown>>(manyToManyResponse.value).map((relationship) => ({
-      name: asString(relationship.SchemaName),
-      type: 'ManyToMany' as const,
-      referencedEntity: asString(relationship.Entity1LogicalName),
-      referencingEntity: asString(relationship.Entity2LogicalName),
-      relationshipDescription: asString(relationship.IntersectEntityName) || undefined,
-    })),
-  ];
-
-  return {
-    name: logicalName,
-    logicalName,
-    displayName: getLabel(metadata.DisplayName, logicalName),
-    description: getLabel(metadata.Description),
-    objectTypeCode: metadata.ObjectTypeCode ? asNumber(metadata.ObjectTypeCode) : undefined,
-    isCustom: asBoolean(metadata.IsCustomEntity, true),
-    isActivity: asBoolean(metadata.IsActivity),
-    changeTracking: asBoolean(metadata.ChangeTrackingEnabled),
-    attributes,
-    relationships,
-    ownershipType: normalizeOwnershipType(metadata.OwnershipType),
-    entitySetName: asString(metadata.EntitySetName) || undefined,
-    primaryAttributeName: asString(metadata.PrimaryNameAttribute) || undefined,
-    metadataSource: 'dataverse',
-    tableType: asString(metadata.TableType) || (asBoolean(metadata.IsActivity) ? 'Activity' : undefined),
-    hasNotes: asOptionalBoolean(metadata.HasNotes),
-    hasActivities: asOptionalBoolean(metadata.HasActivities),
-    hasFeedback: asOptionalBoolean(metadata.HasFeedback),
-    hasEmailAddresses: asOptionalBoolean(metadata.HasEmailAddresses),
-    isAuditEnabled: asOptionalBoolean(metadata.IsAuditEnabled),
-    isDuplicateDetectionEnabled: asOptionalBoolean(metadata.IsDuplicateDetectionEnabled),
-    isQuickCreateEnabled: asOptionalBoolean(metadata.IsQuickCreateEnabled),
-    entityHelpUrlEnabled: asOptionalBoolean(metadata.EntityHelpUrlEnabled),
-    entityHelpUrl: asString(metadata.EntityHelpUrl) || undefined,
-    isRetentionEnabled: asOptionalBoolean(metadata.IsRetentionEnabled),
-    isActivityParty: asOptionalBoolean(metadata.IsActivityParty),
-    isOneNoteIntegrationEnabled: asOptionalBoolean(metadata.IsOneNoteIntegrationEnabled),
-    isMailMergeEnabled: asOptionalBoolean(metadata.IsMailMergeEnabled),
-    isDocumentManagementEnabled: asOptionalBoolean(metadata.IsDocumentManagementEnabled),
-    isConnectionsEnabled: asOptionalBoolean(metadata.IsConnectionsEnabled),
-    autoCreateAccessTeams: asOptionalBoolean(metadata.AutoCreateAccessTeams),
-    syncToExternalSearchIndex: asOptionalBoolean(metadata.SyncToExternalSearchIndex),
-    isAvailableOffline: asOptionalBoolean(metadata.IsAvailableOffline),
-    isValidForQueue: asOptionalBoolean(metadata.IsValidForQueue),
-    autoRouteToOwnerQueue: asOptionalBoolean(metadata.AutoRouteToOwnerQueue),
-  };
-}
-
 async function fetchForms(solutionId: string): Promise<FormDefinition[]> {
   const rows = await fetchXmlQuery(`
     <fetch>
@@ -1489,8 +807,9 @@ export async function fetchEnvironmentVariables(solutionId: string, warnings: st
     return [];
   }
 
-  const definitionIds = definitions.map((row) => asString(row.environmentvariabledefinitionid)).filter(Boolean);
-  let valuesByDefinitionId = new Map<string, string>();
+  const definitionIds = definitions.map((row) => referenceId(row.environmentvariabledefinitionid)).filter(Boolean);
+  const definitionsWithValues = new Set<string>();
+  let currentValueError: string | undefined;
 
   if (definitionIds.length > 0) {
     try {
@@ -1501,28 +820,37 @@ export async function fetchEnvironmentVariables(solutionId: string, warnings: st
             <attribute name="environmentvariabledefinitionid" />
             <filter type="and">
               ${buildInConditions('environmentvariabledefinitionid', definitionIds)}
+              <condition attribute="value" operator="not-null" />
             </filter>
           </entity>
         </fetch>
       `);
-      valuesByDefinitionId = new Map(
-        valueRows.map((row) => [asString(row.environmentvariabledefinitionid), '__PRESENT__']),
-      );
+      for (const row of valueRows) {
+        const definitionId = referenceId(row._environmentvariabledefinitionid_value ?? row.environmentvariabledefinitionid);
+        if (!definitionId) throw new Error('A current-value record was returned without its definition lookup.');
+        definitionsWithValues.add(definitionId);
+      }
     } catch (error) {
-      warnings.push(warningMessage('Environment variable current values could not be read', error));
+      currentValueError = warningMessage('Environment variable current-value presence could not be checked', error);
+      warnings.push(currentValueError);
     }
   }
 
   return definitions.map((row): EnvironmentVariableDefinition => {
-    const id = asString(row.environmentvariabledefinitionid);
-    const currentValue = valuesByDefinitionId.get(id);
+    const id = referenceId(row.environmentvariabledefinitionid);
+    if (!id) warnings.push('Environment variable current-value presence is unknown because its definition ID was not returned.');
+    const variableTypes: Record<number, string> = {
+      100000000: 'String', 100000001: 'Number', 100000002: 'Boolean',
+      100000003: 'JSON', 100000004: 'Data Source', 100000005: 'Secret',
+    };
     return {
       name: asString(row.displayname) || asString(row.schemaname),
       displayName: asString(row.displayname) || undefined,
       description: asString(row.description) || undefined,
-      type: asString(row.type) || 'String',
+      type: variableTypes[asNumber(row.type, -1)] ?? (asString(row.type) || 'Unknown'),
       defaultValue: asString(row.defaultvalue) || undefined,
-      hasCurrentValue: typeof currentValue === 'string' && currentValue.length > 0,
+      hasCurrentValue: definitionsWithValues.has(id) ? true : currentValueError || !id ? undefined : false,
+      currentValueError: currentValueError ?? (!id ? 'The environment variable definition ID was not returned.' : undefined),
       // Connected documentation reports presence only; never render a live value.
       currentValue: undefined,
       schemaName: asString(row.schemaname),
@@ -1589,7 +917,11 @@ async function fetchDashboards(solutionId: string, warnings: string[]): Promise<
   }
 }
 
-async function fetchPluginAssemblies(solutionId: string, warnings: string[]): Promise<PluginAssemblyDefinition[]> {
+/**
+ * Reads plug-in assemblies in the solution with their types and steps using three set-based queries
+ * (assemblies, plug-in types, steps) rather than per-assembly round trips.
+ */
+export async function fetchPluginAssemblies(solutionId: string, warnings: string[]): Promise<PluginAssemblyDefinition[]> {
   try {
     const assemblyRows = await fetchXmlQuery(`
       <fetch>
@@ -1606,73 +938,74 @@ async function fetchPluginAssemblies(solutionId: string, warnings: string[]): Pr
       </fetch>
     `);
 
-    const assemblies: PluginAssemblyDefinition[] = [];
+    // Read plug-in types and steps for every assembly in set-based batches instead of per assembly.
+    const assemblyIds = assemblyRows.map((assembly) => asString(assembly.pluginassemblyid)).filter(Boolean);
+    const pluginTypeRows = await fetchXmlQueryForIds(assemblyIds, (inCondition) => `
+      <fetch>
+        <entity name="plugintype">
+          <attribute name="plugintypeid" />
+          <attribute name="typename" />
+          <attribute name="pluginassemblyid" />
+          <filter>${inCondition}</filter>
+        </entity>
+      </fetch>
+    `, 'pluginassemblyid');
 
-    for (const assembly of assemblyRows) {
-      const assemblyId = asString(assembly.pluginassemblyid);
-      const pluginTypeRows = await fetchXmlQuery(`
-        <fetch>
-          <entity name="plugintype">
-            <attribute name="plugintypeid" />
-            <attribute name="typename" />
-            <filter>
-              <condition attribute="pluginassemblyid" operator="eq" value="${escapeXml(assemblyId)}" />
-            </filter>
-          </entity>
-        </fetch>
-      `);
+    const pluginTypeNameById = new Map(pluginTypeRows.map((row) => [referenceId(row.plugintypeid), asString(row.typename)]));
+    const assemblyIdByPluginTypeId = new Map(pluginTypeRows.map((row) => [
+      referenceId(row.plugintypeid),
+      referenceId(row._pluginassemblyid_value ?? row.pluginassemblyid),
+    ]));
+    const stepRows = await fetchXmlQueryForIds([...pluginTypeNameById.keys()], (inCondition) => `
+      <fetch>
+        <entity name="sdkmessageprocessingstep">
+          <attribute name="name" />
+          <attribute name="stage" />
+          <attribute name="mode" />
+          <attribute name="filteringattributes" />
+          <attribute name="description" />
+          <attribute name="eventhandler" />
+          <link-entity name="sdkmessage" from="sdkmessageid" to="sdkmessageid" alias="message" link-type="outer">
+            <attribute name="name" />
+          </link-entity>
+          <link-entity name="sdkmessagefilter" from="sdkmessagefilterid" to="sdkmessagefilterid" alias="filter" link-type="outer">
+            <attribute name="primaryobjecttypecode" />
+          </link-entity>
+          <filter>${inCondition}</filter>
+        </entity>
+      </fetch>
+    `, 'eventhandler');
 
-      const pluginTypeIds = pluginTypeRows.map((row) => asString(row.plugintypeid)).filter(Boolean);
-      const pluginTypeNameById = new Map(pluginTypeRows.map((row) => [asString(row.plugintypeid), asString(row.typename)]));
-      let stepRows: Record<string, unknown>[] = [];
-
-      if (pluginTypeIds.length > 0) {
-        stepRows = await fetchXmlQuery(`
-          <fetch>
-            <entity name="sdkmessageprocessingstep">
-              <attribute name="name" />
-              <attribute name="stage" />
-              <attribute name="mode" />
-              <attribute name="filteringattributes" />
-              <attribute name="description" />
-              <attribute name="eventhandler" />
-              <link-entity name="sdkmessage" from="sdkmessageid" to="sdkmessageid" alias="message" link-type="outer">
-                <attribute name="name" />
-              </link-entity>
-              <link-entity name="sdkmessagefilter" from="sdkmessagefilterid" to="sdkmessagefilterid" alias="filter" link-type="outer">
-                <attribute name="primaryobjecttypecode" />
-              </link-entity>
-              <filter>
-                ${buildInConditions('eventhandler', pluginTypeIds)}
-              </filter>
-            </entity>
-          </fetch>
-        `);
-      }
-
-      const steps: PluginStepDefinition[] = stepRows.map((row) => ({
+    const stepsByAssemblyId = new Map<string, PluginStepDefinition[]>();
+    for (const row of stepRows) {
+      const pluginTypeId = referenceId(row._eventhandler_value ?? row.eventhandler);
+      const assemblyId = assemblyIdByPluginTypeId.get(pluginTypeId);
+      if (!assemblyId) continue;
+      const steps = stepsByAssemblyId.get(assemblyId) ?? [];
+      steps.push({
         name: asString(row.name),
         message: asString(row['message.name']) || 'Unknown',
         primaryEntity: asString(row['filter.primaryobjecttypecode']) || undefined,
         stage: asNumber(row.stage),
         mode: asNumber(row.mode),
-        pluginTypeName: pluginTypeNameById.get(asString(row.eventhandler)) ?? 'Unknown',
+        pluginTypeName: pluginTypeNameById.get(pluginTypeId) ?? 'Unknown',
         filteringAttributes: asString(row.filteringattributes) || undefined,
         description: asString(row.description) || undefined,
-      }));
-
-      assemblies.push({
-        name: asString(assembly.name),
-        displayName: asString(assembly.name),
-        assemblyName: asString(assembly.name),
-        version: asString(assembly.version) || undefined,
-        culture: asString(assembly.culture) || undefined,
-        publicKeyToken: asString(assembly.publickeytoken) || undefined,
-        isolationMode: asNumber(assembly.isolationmode),
-        sourceType: asString(assembly.sourcetype) || undefined,
-        steps,
       });
+      stepsByAssemblyId.set(assemblyId, steps);
     }
+
+    const assemblies: PluginAssemblyDefinition[] = assemblyRows.map((assembly) => ({
+      name: asString(assembly.name),
+      displayName: asString(assembly.name),
+      assemblyName: asString(assembly.name),
+      version: asString(assembly.version) || undefined,
+      culture: asString(assembly.culture) || undefined,
+      publicKeyToken: asString(assembly.publickeytoken) || undefined,
+      isolationMode: asNumber(assembly.isolationmode),
+      sourceType: asString(assembly.sourcetype) || undefined,
+      steps: stepsByAssemblyId.get(referenceId(assembly.pluginassemblyid)) ?? [],
+    }));
 
     return assemblies;
   } catch (error) {
@@ -1747,7 +1080,7 @@ export async function fetchModernDataverseArtifacts(
     queryDataverseWithFallback([
       `aimodels?$select=aimodelid,name,description,provider,version&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
       `aimodeldefinitions?$select=aimodeldefinitionid,name,description,provider,version&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
-    ], 'AI model artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+    ], 'AI model artefacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
       name: asString(row.name) || asString(row.displayname) || asString(row.aimodelid),
       displayName: asString(row.displayname) || asString(row.name) || asString(row.aimodelid),
       description: asString(row.description) || undefined,
@@ -1758,7 +1091,7 @@ export async function fetchModernDataverseArtifacts(
     queryDataverseWithFallback([
       `desktopflows?$select=desktopflowid,name,description,isenabled,stepcount&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
       `uiflows?$select=uiflowid,name,description,isenabled,stepcount&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
-    ], 'Desktop flow artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+    ], 'Desktop flow artefacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
       name: asString(row.name) || asString(row.displayname) || asString(row.desktopflowid) || asString(row.uiflowid),
       displayName: asString(row.displayname) || asString(row.name) || asString(row.desktopflowid) || asString(row.uiflowid),
       description: asString(row.description) || undefined,
@@ -1769,7 +1102,7 @@ export async function fetchModernDataverseArtifacts(
     queryDataverseWithFallback([
       `dataflows?$select=dataflowid,name,description,refreshmode&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
       `dataflowdefinitions?$select=dataflowdefinitionid,name,description,refreshmode&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
-    ], 'Dataflow artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+    ], 'Dataflow artefacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
       name: asString(row.name) || asString(row.displayname) || asString(row.dataflowid) || asString(row.dataflowdefinitionid),
       displayName: asString(row.displayname) || asString(row.name) || asString(row.dataflowid) || asString(row.dataflowdefinitionid),
       description: asString(row.description) || undefined,
@@ -1787,7 +1120,7 @@ export async function fetchModernDataverseArtifacts(
     queryDataverseWithFallback([
       `mobileofflineprofiles?$select=mobileofflineprofileid,name,description,profiletype&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
       `offlineprofiles?$select=offlineprofileid,name,description,profiletype&$filter=${encodeURIComponent(`_solutionid_value eq ${solutionId}`)}`,
-    ], 'Offline profile artifacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
+    ], 'Offline profile artefacts could not be read', warnings, false).then((rows) => rows.map((row) => ({
       name: asString(row.name) || asString(row.displayname) || asString(row.mobileofflineprofileid) || asString(row.offlineprofileid),
       displayName: asString(row.displayname) || asString(row.name) || asString(row.mobileofflineprofileid) || asString(row.offlineprofileid),
       description: asString(row.description) || undefined,
@@ -1797,96 +1130,6 @@ export async function fetchModernDataverseArtifacts(
   ]);
 
   return { agents, aiModels, desktopFlows, dataflows, customApis: customApiRows, offlineProfiles };
-}
-
-interface DependencyComponentLabel {
-  name: string;
-  table?: string;
-}
-
-/** Reads only import prerequisites for the named solution, never the environment-wide runtime graph. */
-export async function fetchMissingDependencies(solutionUniqueName: string, warnings: string[]): Promise<MissingDependency[]> {
-  if (!solutionUniqueName.trim()) throw new Error('A solution unique name is required to retrieve import dependencies.');
-  const literal = encodeURIComponent(solutionUniqueName.replace(/'/g, "''"));
-  const rows = await queryDataverse(`RetrieveMissingDependencies(SolutionUniqueName='${literal}')`);
-  const labels = new Map<string, Promise<DependencyComponentLabel>>();
-  const resolve = (type: number, id: string, parentId: string): Promise<DependencyComponentLabel> => {
-    const key = `${type}|${id.toLowerCase()}|${parentId.toLowerCase()}`;
-    const existing = labels.get(key);
-    if (existing) return existing;
-    const promise = (async (): Promise<DependencyComponentLabel> => {
-      let table: string | undefined;
-      try {
-        if (type === 1) {
-          const metadata = await window.dataverseAPI.getEntityMetadata(id, false, ['LogicalName']);
-          if (!metadata.LogicalName) throw new Error('Dataverse did not return the table logical name.');
-          return { name: metadata.LogicalName, table: metadata.LogicalName };
-        }
-        if (type === 2 && parentId && parentId !== '00000000-0000-0000-0000-000000000000') {
-          const parent = await resolve(1, parentId, '');
-          if (!parent.table) return { name: id };
-          table = parent.table;
-          const response = await window.dataverseAPI.getEntityRelatedMetadata(parent.table, 'Attributes', ['MetadataId', 'LogicalName']);
-          const attribute = response.value.find((item) => asString(item.MetadataId).toLowerCase() === id.toLowerCase());
-          if (!attribute?.LogicalName) throw new Error('Dataverse did not return the column logical name.');
-          return { name: `${parent.table}.${asString(attribute.LogicalName)}`, table: parent.table };
-        }
-        const recordTypes: Record<number, { entity: string; id: string; name: string; table?: string }> = {
-          20: { entity: 'role', id: 'roleid', name: 'name' },
-          24: { entity: 'systemform', id: 'formid', name: 'name', table: 'objecttypecode' },
-          26: { entity: 'savedquery', id: 'savedqueryid', name: 'name', table: 'returnedtypecode' },
-          29: { entity: 'workflow', id: 'workflowid', name: 'name', table: 'primaryentity' },
-          31: { entity: 'report', id: 'reportid', name: 'name' },
-          60: { entity: 'systemform', id: 'formid', name: 'name', table: 'objecttypecode' },
-          61: { entity: 'webresource', id: 'webresourceid', name: 'name' },
-          80: { entity: 'appmodule', id: 'appmoduleid', name: 'uniquename' },
-          90: { entity: 'plugintype', id: 'plugintypeid', name: 'typename' },
-          91: { entity: 'pluginassembly', id: 'pluginassemblyid', name: 'name' },
-          92: { entity: 'sdkmessageprocessingstep', id: 'sdkmessageprocessingstepid', name: 'name' },
-          300: { entity: 'canvasapp', id: 'canvasappid', name: 'name' },
-          380: { entity: 'environmentvariabledefinition', id: 'environmentvariabledefinitionid', name: 'schemaname' },
-          10039: { entity: 'connectionreference', id: 'connectionreferenceid', name: 'connectionreferencelogicalname' },
-        };
-        const recordType = recordTypes[type];
-        if (!recordType) {
-          const parent = [3, 10, 14].includes(type) && parentId && parentId !== '00000000-0000-0000-0000-000000000000'
-            ? await resolve(1, parentId, '') : undefined;
-          return { name: id, table: parent?.table };
-        }
-        const records = await fetchXmlQuery(`<fetch><entity name="${recordType.entity}">
-          <attribute name="${recordType.name}" />
-          ${recordType.table ? `<attribute name="${recordType.table}" />` : ''}
-          <filter><condition attribute="${recordType.id}" operator="eq" value="${escapeXml(id)}" /></filter>
-        </entity></fetch>`);
-        const record = records[0];
-        if (!record || !asString(record[recordType.name])) throw new Error('Dataverse did not return the component name.');
-        return { name: asString(record[recordType.name]), table: recordType.table ? asString(record[recordType.table]) || undefined : undefined };
-      } catch (error) {
-        warnings.push(warningMessage(`Import dependency label for ${dependencyComponentType(type)} ${id} could not be resolved; the component ID is retained`, error));
-        return { name: id, table };
-      }
-    })();
-    labels.set(key, promise);
-    return promise;
-  };
-  const dependencies: MissingDependency[] = [];
-  for (const row of rows) {
-    const dependentId = asString(row.dependentcomponentobjectid);
-    const requiredId = asString(row.requiredcomponentobjectid);
-    const dependentType = asNumber(row.dependentcomponenttype, -1);
-    const requiredType = asNumber(row.requiredcomponenttype, -1);
-    if (!dependentId || !requiredId || dependentType < 0 || requiredType < 0) {
-      throw new Error('Dataverse returned an invalid RetrieveMissingDependencies record; import dependency results are incomplete.');
-    }
-    const dependent = await resolve(dependentType, dependentId, asString(row.dependentcomponentparentid));
-    const required = await resolve(requiredType, requiredId, asString(row.requiredcomponentparentid));
-    dependencies.push({
-      dependentName: dependent.name, dependentType: dependencyComponentType(dependentType), dependentId,
-      requiredName: required.name, requiredType: dependencyComponentType(requiredType), requiredId,
-      tableLogicalNames: dependent.table ? [dependent.table] : [], solutionUniqueName,
-    });
-  }
-  return dependencies;
 }
 
 export async function buildParsedSolutionFromDataverse(
@@ -1906,20 +1149,34 @@ export async function buildParsedSolutionFromDataverse(
 
   update('Reading Dataverse entities and metadata...', 15);
   const entityLogicalNames = await getEntityLogicalNamesForSolution(solutionId);
-  const entities: EntityDefinition[] = [];
-  for (let index = 0; index < entityLogicalNames.length; index++) {
-    const logicalName = entityLogicalNames[index];
-    try {
-      entities.push(await buildEntityDefinition(logicalName));
-    } catch (error) {
-      warnings.push(warningMessage(`Entity metadata for ${logicalName} could not be read`, error));
-    }
-    const progress = entityLogicalNames.length === 0 ? 25 : 15 + Math.round(((index + 1) / entityLogicalNames.length) * 25);
-    update(`Reading table metadata (${index + 1}/${Math.max(entityLogicalNames.length, 1)})...`, progress);
-  }
+  const entityResults: Array<EntityDefinition | undefined> = Array.from({ length: entityLogicalNames.length });
+  let completedEntities = 0;
+  let nextEntityIndex = 0;
+  const entityWorkers = Array.from(
+    { length: Math.min(ENTITY_METADATA_CONCURRENCY, entityLogicalNames.length) },
+    async () => {
+      while (nextEntityIndex < entityLogicalNames.length) {
+        const index = nextEntityIndex++;
+        const logicalName = entityLogicalNames[index];
+        try {
+          entityResults[index] = await buildEntityDefinition(logicalName);
+        } catch (error) {
+          if (isCollectionCancelledError(error)) throw error;
+          warnings.push(warningMessage(`Entity metadata for ${logicalName} could not be read`, error));
+        } finally {
+          completedEntities += 1;
+          const progress = 15 + Math.round((completedEntities / Math.max(entityLogicalNames.length, 1)) * 25);
+          update(`Reading table metadata (${completedEntities}/${Math.max(entityLogicalNames.length, 1)})...`, progress);
+        }
+      }
+    },
+  );
+  await Promise.all(entityWorkers);
+  throwIfDataverseCollectionCancelled();
+  const entities = entityResults.filter((entity): entity is EntityDefinition => entity !== undefined);
 
   update('Reading solution components...', 45);
-  const [forms, views, processes, customApis, apps, webResources, securityRoles, fieldSecurityProfiles, connectionReferences, environmentVariables, reports, dashboards, pluginAssemblies, modernArtifacts] = await Promise.all([
+  const [forms, views, processes, customApis, apps, webResources, securityRoles, fieldSecurityProfiles, connectionReferences, environmentVariables, reports, dashboards, pluginAssemblies, modernArtifacts, additionalComponents] = await Promise.all([
     fetchForms(solutionId).catch((error) => {
       warnings.push(warningMessage('Forms could not be read', error));
       return [];
@@ -1949,14 +1206,28 @@ export async function buildParsedSolutionFromDataverse(
     fetchDashboards(solutionId, warnings),
     fetchPluginAssemblies(solutionId, warnings),
     fetchModernDataverseArtifacts(solutionId, warnings),
+    fetchSolutionComponentDetails(solutionId, entities, warnings).catch((error) => {
+      warnings.push(warningMessage('Additional solution component inventory could not be read', error));
+      return { optionSets: [], emailTemplates: [], solutionComponents: [], unmappedComponents: [], columnEntities: [], selectedColumnIds: new Set<string>() };
+    }),
   ]);
+  // Collectors convert failures into warnings, so surface cancellation explicitly here.
+  throwIfDataverseCollectionCancelled();
 
   // Prevent platform entities, such as systemuser, from expanding into the
   // environment-wide graph when they are included as relationship context.
-  const selectedEntityNames = new Set(entities.map((entity) => entity.logicalName.toLowerCase()));
-  const scopedEntities = entities.map((entity) => ({
+  const entitiesByName = new Map(entities.map((entity) => [entity.logicalName.toLowerCase(), entity]));
+  for (const columnEntity of additionalComponents.columnEntities) {
+    const existing = entitiesByName.get(columnEntity.logicalName.toLowerCase());
+    entitiesByName.set(columnEntity.logicalName.toLowerCase(), existing ? {
+      ...existing,
+      attributes: [...new Map([...existing.attributes, ...columnEntity.attributes].map((attribute) => [attribute.name, attribute])).values()],
+    } : columnEntity);
+  }
+  const selectedEntityNames = new Set(entitiesByName.keys());
+  const scopedEntities = [...entitiesByName.values()].map((entity) => ({
     ...entity,
-    attributes: entity.isCustom ? entity.attributes : [],
+    attributes: entity.isCustom ? entity.attributes : entity.attributes.filter((attribute) => additionalComponents.selectedColumnIds.has(referenceId(attribute.metadataId))),
     relationships: entity.relationships.filter((relationship) =>
       selectedEntityNames.has(relationship.referencedEntity.toLowerCase())
       && selectedEntityNames.has(relationship.referencingEntity.toLowerCase())),
@@ -1976,9 +1247,11 @@ export async function buildParsedSolutionFromDataverse(
   update('Preparing markdown source model...', 95);
   const parsed: ParsedSolution = {
     collectionPolicy,
+    unmappedComponents: additionalComponents.unmappedComponents,
+    solutionComponents: additionalComponents.solutionComponents,
     metadata,
     entities: scopedEntities,
-    optionSets: [],
+    optionSets: additionalComponents.optionSets,
     forms,
     views,
     processes,
@@ -1988,7 +1261,7 @@ export async function buildParsedSolutionFromDataverse(
     fieldSecurityProfiles,
     connectionReferences,
     environmentVariables,
-    emailTemplates: [],
+    emailTemplates: additionalComponents.emailTemplates,
     reports,
     dashboards,
     pluginAssemblies,
@@ -2008,8 +1281,10 @@ export async function buildParsedSolutionFromDataverse(
     update('Reading solution installation/import prerequisites...', 97);
     parsed.missingDependencies = await fetchMissingDependencies(metadata.uniqueName, warnings);
   } catch (error) {
+    if (isCollectionCancelledError(error)) throw error;
     parsed.missingDependenciesError = warningMessage(`Installation/import dependencies for solution ${metadata.uniqueName || solutionId} could not be retrieved`, error);
     warnings.push(parsed.missingDependenciesError);
   }
+  throwIfDataverseCollectionCancelled();
   return parsed;
 }

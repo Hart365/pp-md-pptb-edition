@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { isInPPTB, onToolboxEvent, type IConnection } from '../api/toolboxAPI';
+import { useTheme } from '../context/ThemeContext';
 
 interface ConnectionSubscriber {
   (connection: IConnection | null): void;
@@ -15,6 +16,7 @@ class ConnectionStateStore {
   private connection: IConnection | null = null;
   private subscribers: Set<ConnectionSubscriber> = new Set();
   private initialized = false;
+  private unsubscribeToolboxEvents?: () => void;
 
   async initialize(): Promise<IConnection | null> {
     if (this.initialized) {
@@ -23,12 +25,6 @@ class ConnectionStateStore {
 
     this.connection = await (isInPPTB() ? window.toolboxAPI.connections.getActiveConnection() : null);
     this.initialized = true;
-
-    onToolboxEvent((_event, payload) => {
-      if (payload.event === 'connection:updated' || payload.event === 'connection:changed') {
-        void this.refreshConnection();
-      }
-    });
 
     return this.connection;
   }
@@ -47,8 +43,20 @@ class ConnectionStateStore {
 
   subscribe(callback: ConnectionSubscriber): () => void {
     this.subscribers.add(callback);
+    if (this.subscribers.size === 1) {
+      this.unsubscribeToolboxEvents = onToolboxEvent((_event, payload) => {
+        if (payload.event === 'connection:updated') {
+          void this.refreshConnection();
+        }
+      });
+    }
+
     return () => {
       this.subscribers.delete(callback);
+      if (this.subscribers.size === 0) {
+        this.unsubscribeToolboxEvents?.();
+        this.unsubscribeToolboxEvents = undefined;
+      }
     };
   }
 
@@ -65,7 +73,7 @@ interface ToolboxAPIState {
   connection: IConnection | null;
   isLoading: boolean;
   isInPPTB: boolean;
-  theme: 'light' | 'dark' | null;
+  theme: 'light' | 'dark';
   initializeConnection: () => Promise<IConnection | null>;
 }
 
@@ -89,9 +97,9 @@ interface UseToolboxAPIOptions {
  */
 export function useToolboxAPI(options: UseToolboxAPIOptions = {}): ToolboxAPIState {
   const { autoInitConnection = true } = options;
+  const { theme } = useTheme();
   const [connection, setConnection] = useState<IConnection | null>(null);
   const [isLoading, setIsLoading] = useState(autoInitConnection);
-  const [theme, setTheme] = useState<'light' | 'dark' | null>(null);
 
   const initializeConnection = useCallback(async (): Promise<IConnection | null> => {
     if (!isInPPTB()) {
@@ -121,14 +129,6 @@ export function useToolboxAPI(options: UseToolboxAPIOptions = {}): ToolboxAPISta
     // Subscribe to connection changes
     const unsubscribe = connectionStore.subscribe((conn) => {
       setConnection(conn);
-    });
-
-    // Subscribe to theme changes
-    onToolboxEvent((_event, payload) => {
-      if (payload.event === 'theme:updated' || payload.event === 'theme:changed') {
-        const data = payload.data as { theme?: 'light' | 'dark' } | undefined;
-        setTheme(data?.theme ?? null);
-      }
     });
 
     return () => {

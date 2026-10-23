@@ -13,6 +13,22 @@ export function isInPPTB(): boolean {
   return typeof window !== 'undefined' && 'toolboxAPI' in window;
 }
 
+const SETTINGS_KEY_PREFIX = 'pp-md-pptb-edition-';
+const eventSubscribers = new Set<
+  (_event: string, payload: { event: string; data: unknown }) => void
+>();
+let eventBridgeHost: ToolBoxAPI.EventsAPI | null = null;
+
+function namespaceSettingKey(key: string): string {
+  return key.startsWith(SETTINGS_KEY_PREFIX) ? key : `${SETTINGS_KEY_PREFIX}${key}`;
+}
+
+function dispatchToolboxEvent(event: unknown, payload: ToolBoxAPI.ToolBoxEventPayload): void {
+  for (const callback of eventSubscribers) {
+    callback(String(event), payload);
+  }
+}
+
 /**
  * Show a notification in the PPTB interface
  */
@@ -48,22 +64,47 @@ export async function getActiveConnection(): Promise<IConnection | null> {
 export function onToolboxEvent(
   callback: (_event: string, payload: { event: string; data: unknown }) => void
 ): (() => void) | undefined {
-  if (isInPPTB()) {
-    window.toolboxAPI.events.on(callback);
-    // Return unsubscribe function if available
-    return () => {
-      // PPTB may not provide unsubscribe, but we'll return a no-op
-    };
+  if (!isInPPTB()) return undefined;
+
+  const hostEvents = window.toolboxAPI.events;
+  if (!eventBridgeHost) {
+    eventBridgeHost = hostEvents;
+    eventBridgeHost.on(dispatchToolboxEvent);
   }
+  eventSubscribers.add(callback);
+
+  let subscribed = true;
+  return () => {
+    if (!subscribed) return;
+    subscribed = false;
+    eventSubscribers.delete(callback);
+
+    if (eventSubscribers.size === 0 && eventBridgeHost) {
+      eventBridgeHost.off(dispatchToolboxEvent);
+      eventBridgeHost = null;
+    }
+  };
 }
 
 /**
  * Get tool-specific settings
  */
 export async function getSetting<T = unknown>(key: string): Promise<T | null> {
+  const namespacedKey = namespaceSettingKey(key);
   if (isInPPTB()) {
-    return window.toolboxAPI.settings.get(key) as Promise<T | null>;
+    const value = await window.toolboxAPI.settings.get(namespacedKey);
+    return value === undefined ? null : value as T;
   }
+
+  if (import.meta.env.DEV && typeof localStorage !== 'undefined') {
+    try {
+      const value = localStorage.getItem(namespacedKey);
+      return value === null ? null : JSON.parse(value) as T;
+    } catch {
+      return null;
+    }
+  }
+
   return null;
 }
 
@@ -71,11 +112,17 @@ export async function getSetting<T = unknown>(key: string): Promise<T | null> {
  * Save tool-specific settings
  */
 export async function saveSetting(key: string, value: unknown): Promise<void> {
+  const namespacedKey = namespaceSettingKey(key);
   if (isInPPTB()) {
-    return window.toolboxAPI.settings.set(key, value);
+    return window.toolboxAPI.settings.set(namespacedKey, value);
   }
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem(key, JSON.stringify(value));
+
+  if (import.meta.env.DEV && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(namespacedKey, JSON.stringify(value));
+    } catch {
+      // Best-effort local development persistence.
+    }
   }
 }
 

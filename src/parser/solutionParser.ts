@@ -17,6 +17,7 @@
 import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import { dependencyComponentType } from '../generator/missingDependencies';
+import { SOLUTION_COMPONENT_TYPE_NAMES } from '../dataverse/componentTypes';
 
 import type {
   ParsedSolution,
@@ -531,44 +532,11 @@ function connectorDisplayFromId(connectorId: string): string {
 }
 
 /**
- * Map from solution XML ComponentType number to our {@link ComponentType} enum.
+ * Friendly labels shared with connected-mode collection and dependency reports.
  * Reference: https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/solutioncomponent
  * Exported for use by future tooling / unit tests.
  */
-export const COMPONENT_TYPE_MAP: Record<number, string> = {
-  1: 'Entity',
-  2: 'Attribute',
-  3: 'Relationship',
-  4: 'Attribute',          // AttributeMap
-  7: 'Role',
-  8: 'RolePrivilege',
-  9: 'FieldSecurityProfile',
-  10: 'FieldPermission',
-  14: 'Workflow',
-  24: 'Form',              // SystemForm
-  26: 'SavedQuery',        // View
-  29: 'Workflow',          // WorkflowAccessRight
-  31: 'Report',
-  32: 'ReportEntity',
-  33: 'ReportCategory',
-  35: 'Report',
-  44: 'Dashboard',
-  60: 'AppModule',
-  61: 'SiteMap',
-  62: 'Process',
-  70: 'FieldSecurityProfile',
-  71: 'ConnectionReference',
-  80: 'ConnectorDefinition',
-  90: 'PluginAssembly',
-  91: 'PluginType',
-  92: 'SdkMessageProcessingStep',
-  95: 'ServiceEndpoint',
-  300: 'CanvasApp',
-  318: 'AIPlugin',
-  380: 'EnvironmentVariableDefinition',
-  400: 'WebResource',
-  430: 'MobileOfflineProfile',
-} as const;
+export const COMPONENT_TYPE_MAP = SOLUTION_COMPONENT_TYPE_NAMES;
 
 // ---------------------------------------------------------------------------
 // solution.xml parsing
@@ -1236,10 +1204,9 @@ function extractSitemapAreas(rawText: string): string[] {
   return Array.from(areas);
 }
 
-function findFlowMatches(flow: Record<string, unknown>, candidates: string[]): string[] {
+function findFlowMatches(serializedFlow: string, candidates: string[]): string[] {
   if (candidates.length === 0) return [];
-  const serialized = JSON.stringify(flow).toLowerCase();
-  return Array.from(new Set(candidates.filter((candidate) => candidate && serialized.includes(candidate.toLowerCase()))));
+  return Array.from(new Set(candidates.filter((candidate) => candidate && serializedFlow.includes(candidate.toLowerCase()))));
 }
 
 function parseDashboardComponents(formXml: string): string[] {
@@ -1541,15 +1508,20 @@ function parseWebResourceNode(node: Record<string, unknown>): WebResourceDefinit
  *
  * @param file    - The ZIP file as a Browser File or Blob object
  * @param onProgress - Optional progress callback receiving a 0–100 number
+ * @param signal  - Optional abort signal; checked at every progress stage so a cancelled parse stops early
  * @returns A fully-populated ParsedSolution
- * @throws If the ZIP cannot be read or does not contain a solution.xml
+ * @throws If the ZIP cannot be read or does not contain a solution.xml, or an `AbortError` when cancelled
  */
 export async function parseSolutionZip(
   file: File | Blob,
   onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
 ): Promise<ParsedSolution> {
   const warnings: string[] = [];
-  const report = (pct: number) => onProgress?.(pct);
+  const report = (pct: number) => {
+    if (signal?.aborted) throw new DOMException('Solution parsing was cancelled.', 'AbortError');
+    onProgress?.(pct);
+  };
 
   // ── Step 1: Open the ZIP ────────────────────────────────────────────────
   report(5);
@@ -1566,6 +1538,12 @@ export async function parseSolutionZip(
   // ── Step 3: Parse customizations.xml ───────────────────────────────────
   report(20);
   const customizationsXml = await readZipEntry(zip, 'customizations.xml');
+  const customizationsDoc = customizationsXml
+    ? xmlParser.parse(customizationsXml) as Record<string, unknown>
+    : undefined;
+  const customizationsRoot = customizationsDoc
+    ? (customizationsDoc['ImportExportXml'] ?? customizationsDoc) as Record<string, unknown>
+    : undefined;
 
   const entities:                  EntityDefinition[]                  = [];
   const optionSets:                OptionSetDefinition[]               = [];
@@ -1584,9 +1562,8 @@ export async function parseSolutionZip(
   const pluginAssemblies:          PluginAssemblyDefinition[]          = [];
   const modernArtifacts = discoverModernArtifacts(zip);
 
-  if (customizationsXml) {
-    const doc = xmlParser.parse(customizationsXml) as Record<string, unknown>;
-    const root = (doc['ImportExportXml'] ?? doc) as Record<string, unknown>;
+  if (customizationsRoot) {
+    const root = customizationsRoot;
 
     // ── Entities ─────────────────────────────────────────────────────────
     report(25);
@@ -2182,8 +2159,9 @@ export async function parseSolutionZip(
 
   flowJsonMap.forEach((flowJson, flowName) => {
     const { steps, connectors, triggerDescription, displayName: jsonDisplayName } = parseFlowDefinition(flowJson);
-    const usedConnectionRefs = findFlowMatches(flowJson, connectionRefCandidates);
-    const usedEnvVars = findFlowMatches(flowJson, envVarCandidates);
+    const serializedFlow = JSON.stringify(flowJson).toLowerCase();
+    const usedConnectionRefs = findFlowMatches(serializedFlow, connectionRefCandidates);
+    const usedEnvVars = findFlowMatches(serializedFlow, envVarCandidates);
 
     // Prefer the display name embedded in the JSON properties (most human-readable)
     const flowNameWithoutGuid = stripTrailingGuid(flowName);
@@ -2287,10 +2265,9 @@ export async function parseSolutionZip(
   // Parse plugin step registrations from customizations.xml
   // (SdkMessageProcessingSteps)
   report(85);
-  if (customizationsXml) {
+  if (customizationsRoot) {
     try {
-      const doc  = xmlParser.parse(customizationsXml) as Record<string, unknown>;
-      const root = (doc['ImportExportXml'] ?? doc) as Record<string, unknown>;
+      const root = customizationsRoot;
       const sdkRoot = (root['SdkMessageProcessingSteps'] ?? root['sdkmessageprocessingsteps'] ?? {}) as Record<string, unknown>;
       const rawSteps: unknown[] = (() => {
         const s = sdkRoot['SdkMessageProcessingStep'] ?? sdkRoot['sdkmessageprocessingstep'];

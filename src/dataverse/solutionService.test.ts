@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { asOptionalBoolean, buildEntityDefinition, fetchEnvironmentVariables, fetchMissingDependencies, normalizeOwnershipType, fetchModernDataverseArtifacts, listDataverseSolutions } from './solutionService';
+import { asOptionalBoolean, buildEntityDefinition, buildParsedSolutionFromDataverse, DataverseCollectionCancelledError, fetchEnvironmentVariables, fetchMissingDependencies, fetchPluginAssemblies, normalizeOwnershipType, fetchModernDataverseArtifacts, listDataverseSolutions, withDataverseAbortSignal } from './solutionService';
 
 describe('solution-specific import dependencies', () => {
   it('uses the exact solution unique name and resolves only components returned by RetrieveMissingDependencies', async () => {
@@ -71,7 +71,13 @@ describe('solution-specific import dependencies', () => {
     Object.defineProperty(globalThis, 'window', {
       value: { dataverseAPI: {
         fetchXmlQuery: vi.fn(async (xml: string) => ({ value: xml.includes('<entity name="solution">')
-          ? [{ uniquename: 'selected_solution', friendlyname: 'Selected' }] : [] })),
+          ? [{ uniquename: 'selected_solution', friendlyname: 'Selected' }]
+          : xml.includes('<entity name="solutioncomponent">')
+            && xml.includes('<attribute name="componenttype" />')
+            && !xml.includes('operator="in"')
+            ? [{ componenttype: 999, objectid: 'unknown-object' }]
+            : [] })),
+        getEntityMetadata: vi.fn(),
         queryData: vi.fn(async (query: string) => {
           if (query.startsWith('RetrieveMissingDependencies')) throw new Error('Access denied');
           return { value: [] };
@@ -83,6 +89,8 @@ describe('solution-specific import dependencies', () => {
     expect(result.missingDependenciesError).toContain('selected_solution');
     expect(result.missingDependenciesError).toContain('Access denied');
     expect(result.warnings).toContain(result.missingDependenciesError);
+    expect(result.unmappedComponents).toEqual([expect.objectContaining({ componentType: 999, objectId: 'unknown-object', componentTypeName: 'Component 999' })]);
+    expect(result.warnings.some((warning) => warning.includes('type 999'))).toBe(true);
   });
 });
 
@@ -411,5 +419,53 @@ describe('metadata value helpers', () => {
     expect(normalizeOwnershipType('OrganizationOwned')).toBe('Organization');
     expect(normalizeOwnershipType('None')).toBe('None');
     expect(normalizeOwnershipType('')).toBeUndefined();
+  });
+});
+
+describe('plug-in assembly batching', () => {
+  it('reads assemblies, plug-in types, and steps in three set-based queries and groups steps by assembly', async () => {
+    const mockFetchXml = vi.fn(async (fetchXml: string) => {
+      if (fetchXml.includes('<entity name="pluginassembly">')) {
+        return { value: [{ pluginassemblyid: 'asm-1', name: 'Alpha' }, { pluginassemblyid: 'asm-2', name: 'Beta' }] };
+      }
+      if (fetchXml.includes('<entity name="plugintype">')) {
+        expect(fetchXml).toContain('asm-1');
+        expect(fetchXml).toContain('asm-2');
+        return { value: [
+          { plugintypeid: 'type-1', typename: 'Alpha.PreCreate', _pluginassemblyid_value: 'asm-1' },
+          { plugintypeid: 'type-2', typename: 'Beta.PostUpdate', _pluginassemblyid_value: 'asm-2' },
+        ] };
+      }
+      if (fetchXml.includes('<entity name="sdkmessageprocessingstep">')) {
+        return { value: [
+          { name: 'Alpha step', stage: 20, mode: 0, _eventhandler_value: 'type-1', 'message.name': 'Create' },
+          { name: 'Beta step', stage: 40, mode: 1, _eventhandler_value: 'type-2', 'message.name': 'Update' },
+        ] };
+      }
+      return { value: [] };
+    });
+    Object.defineProperty(globalThis, 'window', { value: { dataverseAPI: { fetchXmlQuery: mockFetchXml } }, configurable: true });
+
+    const assemblies = await fetchPluginAssemblies('solution-1', []);
+
+    expect(mockFetchXml).toHaveBeenCalledTimes(3);
+    const byName = new Map(assemblies.map((assembly) => [assembly.name, assembly]));
+    expect(byName.get('Alpha')?.steps.map((step) => [step.name, step.pluginTypeName, step.message])).toEqual([['Alpha step', 'Alpha.PreCreate', 'Create']]);
+    expect(byName.get('Beta')?.steps.map((step) => step.name)).toEqual(['Beta step']);
+  });
+});
+
+describe('Dataverse collection cancellation', () => {
+  it('stops before issuing requests and surfaces a cancellation error instead of a partial solution', async () => {
+    const queryData = vi.fn(async () => ({ value: [] }));
+    const fetchXmlQuery = vi.fn(async () => ({ value: [] }));
+    Object.defineProperty(globalThis, 'window', { value: { dataverseAPI: { queryData, fetchXmlQuery } }, configurable: true });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(withDataverseAbortSignal(controller.signal, () => buildParsedSolutionFromDataverse('solution-1')))
+      .rejects.toBeInstanceOf(DataverseCollectionCancelledError);
+    expect(queryData).not.toHaveBeenCalled();
+    expect(fetchXmlQuery).not.toHaveBeenCalled();
   });
 });

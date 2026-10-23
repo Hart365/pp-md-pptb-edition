@@ -26,15 +26,18 @@ import { DropZone }          from './components/ui/DropZone';
 import { DataverseSolutionBrowser } from './components/ui/DataverseSolutionBrowser';
 import { ProgressBar }       from './components/ui/ProgressBar';
 import { MarkdownViewer }    from './components/ui/MarkdownViewer';
+import { UpdateChecker }     from './components/ui/UpdateChecker';
 import { SolutionSidebar }   from './components/SolutionSidebar';
 import { parseSolutionZip }  from './parser/solutionParser';
 import {
   generateMarkdown,
+  generateDiagnosticsMarkdown,
   generateDependencyReportMarkdown,
   consolidateSolutions,
   fillSolutionGapsFromPeerSolutions,
+  didPeerGapFillAddData,
   splitMarkdownByCategory,
-  extractDiagramsDocument,
+  splitDiagramsDocument,
   DEFAULT_DOCUMENTATION_SCOPE,
   DEFAULT_DOCUMENTATION_SETTINGS,
   type DocumentContext,
@@ -45,12 +48,15 @@ import {
   type AttributeSelectionMode,
   type EnrichmentIndicators,
 } from './generator/markdownGenerator';
-import type { ParsedSolution, SolutionCollectionPolicy } from './types/solution';
+import type { EnvironmentAppendix, ParsedSolution, SolutionCollectionPolicy } from './types/solution';
 import {
   buildParsedSolutionFromDataverse,
+  isCollectionCancelledError,
   listDataverseSolutions,
+  withDataverseAbortSignal,
   type DataverseSolutionSummary,
 } from './dataverse/solutionService';
+import { collectEnvironmentAppendix } from './dataverse/environmentCollector';
 import { useToolboxAPI }     from './hooks/useToolboxAPI';
 import { exportMarkdown, exportZip, exportHtml, exportExcel, exportPdf } from './api/fileManager';
 import { createSolutionWorkbook } from './api/excelExporter';
@@ -92,6 +98,12 @@ interface SolutionResult {
   peerGapFillApplied?: boolean;
   dataverseMetadataEnriched?: boolean;
   diagramsMarkdown?: string;
+  diagnosticsMarkdown?: string;
+  /**
+   * Environment-wide appendix collected for this run. Kept on the result (not the parsed solution)
+   * so it renders only in the consolidated "All Selected Solutions" document.
+   */
+  environmentAppendix?: EnvironmentAppendix;
 }
 
 type ErdMode = 'compact' | 'detailed-relationships';
@@ -252,7 +264,10 @@ function buildConsolidatedResult(
   documentContext: DocumentContext,
 ): SolutionResult {
   const solutions = results.map((r) => r.solution);
-  const aggregated: ParsedSolution = consolidateSolutions(solutions);
+  const aggregated: ParsedSolution = {
+    ...consolidateSolutions(solutions),
+    environmentAppendix: results.find((result) => result.environmentAppendix)?.environmentAppendix,
+  };
   const indicators: EnrichmentIndicators = {
     peerGapFillApplied: results.some((result) => result.peerGapFillApplied),
     dataverseMetadataEnriched: results.some((result) => result.dataverseMetadataEnriched),
@@ -266,20 +281,11 @@ function buildConsolidatedResult(
     scope: generationPreferences.scope,
     documentationSettings: generationPreferences.documentationSettings,
   });
-  const diagramsMarkdown = generationPreferences.includeDiagrams
-    ? extractDiagramsDocument(fullMarkdownWithDiagrams, 'All Selected Solutions: Diagrams')
+  const splitDocument = generationPreferences.includeDiagrams
+    ? splitDiagramsDocument(fullMarkdownWithDiagrams, 'All Selected Solutions: Diagrams')
     : undefined;
-  const markdown = generationPreferences.includeDiagrams
-    ? generateMarkdown(aggregated, {
-      erdMode: generationPreferences.erdMode,
-      documentContext,
-      enrichmentIndicators: indicators,
-      includeDiagrams: false,
-      includeDefaultColumns: generationPreferences.includeDefaultColumns,
-      scope: generationPreferences.scope,
-      documentationSettings: generationPreferences.documentationSettings,
-    })
-    : fullMarkdownWithDiagrams;
+  const diagramsMarkdown = splitDocument?.diagramsMarkdown || undefined;
+  const markdown = splitDocument?.mainMarkdown ?? fullMarkdownWithDiagrams;
 
   return {
     solution: aggregated,
@@ -287,6 +293,8 @@ function buildConsolidatedResult(
     fileName: 'all-selected-solutions.md',
     isConsolidated: true,
     diagramsMarkdown,
+    diagnosticsMarkdown: generateDiagnosticsMarkdown(aggregated) || undefined,
+    environmentAppendix: aggregated.environmentAppendix,
     peerGapFillApplied: indicators.peerGapFillApplied,
     dataverseMetadataEnriched: indicators.dataverseMetadataEnriched,
   };
@@ -297,7 +305,7 @@ function generateSolutionDocument(
   generationPreferences: GenerationPreferences,
   documentContext: DocumentContext,
   enrichmentIndicators?: EnrichmentIndicators,
-): Pick<SolutionResult, 'markdown' | 'diagramsMarkdown'> {
+): Pick<SolutionResult, 'markdown' | 'diagramsMarkdown' | 'diagnosticsMarkdown'> {
   const fullMarkdownWithDiagrams = generateMarkdown(solution, {
     erdMode: generationPreferences.erdMode,
     documentContext,
@@ -309,23 +317,14 @@ function generateSolutionDocument(
   });
   const shouldSeparate = generationPreferences.includeDiagrams
     && (generationPreferences.documentationSettings.separateDiagramsDocument || isLargeOrComplexMarkdown(fullMarkdownWithDiagrams));
-  const diagramsMarkdown = shouldSeparate
-    ? extractDiagramsDocument(fullMarkdownWithDiagrams, `${solution.metadata.displayName || solution.metadata.uniqueName}: Diagrams`)
+  const splitDocument = shouldSeparate
+    ? splitDiagramsDocument(fullMarkdownWithDiagrams, `${solution.metadata.displayName || solution.metadata.uniqueName}: Diagrams`)
     : undefined;
 
   return {
-    markdown: shouldSeparate
-      ? generateMarkdown(solution, {
-        erdMode: generationPreferences.erdMode,
-        documentContext,
-        enrichmentIndicators,
-        includeDiagrams: false,
-        includeDefaultColumns: generationPreferences.includeDefaultColumns,
-        scope: generationPreferences.scope,
-        documentationSettings: generationPreferences.documentationSettings,
-      })
-      : fullMarkdownWithDiagrams,
-    diagramsMarkdown: diagramsMarkdown || undefined,
+    markdown: splitDocument?.mainMarkdown ?? fullMarkdownWithDiagrams,
+    diagramsMarkdown: splitDocument?.diagramsMarkdown || undefined,
+    diagnosticsMarkdown: generateDiagnosticsMarkdown(solution) || undefined,
   };
 }
 
@@ -336,32 +335,45 @@ function buildResultsWithCombinedDocument(
 ): SolutionResult[] {
   const sortedBase = sortSolutionResults(baseResults
     .filter((entry) => !entry.isConsolidated));
+  const sharedMerged = sortedBase.length > 1
+    ? consolidateSolutions(sortedBase.map((entry) => entry.solution))
+    : undefined;
 
   const enrichedBase = sortedBase.map((entry, index, allEntries) => {
     const peerSolutions = allEntries
       .filter((_, peerIndex) => peerIndex !== index)
       .map((peer) => peer.solution);
-    const enrichedSolution = fillSolutionGapsFromPeerSolutions(entry.solution, peerSolutions);
+    const enrichedSolution = fillSolutionGapsFromPeerSolutions(entry.solution, peerSolutions, sharedMerged);
+    const peerGapFillApplied = didPeerGapFillAddData(entry.solution, enrichedSolution);
 
     const document = generateSolutionDocument(enrichedSolution, generationPreferences, documentContext, resultEnrichmentIndicators({
-      peerGapFillApplied: peerSolutions.length > 0,
+      peerGapFillApplied,
       dataverseMetadataEnriched: entry.dataverseMetadataEnriched,
     }));
 
     return {
       ...entry,
       solution: enrichedSolution,
-      peerGapFillApplied: peerSolutions.length > 0,
+      peerGapFillApplied,
       markdown: document.markdown,
       diagramsMarkdown: document.diagramsMarkdown,
+      diagnosticsMarkdown: document.diagnosticsMarkdown,
     };
   });
 
-  if (generationPreferences.documentationSettings.createConsolidatedDocument && enrichedBase.length > 1) {
+  // The Environment Appendix is only rendered in the consolidated document, so that document is
+  // always created when an appendix exists, even for a single solution.
+  const hasEnvironmentAppendix = enrichedBase.some((entry) => entry.environmentAppendix);
+  if ((generationPreferences.documentationSettings.createConsolidatedDocument && enrichedBase.length > 1) || hasEnvironmentAppendix) {
     return [...enrichedBase, buildConsolidatedResult(enrichedBase, generationPreferences, documentContext)];
   }
 
   return enrichedBase;
+}
+
+function confirmDiscardResults(action: string, resultCount: number): boolean {
+  if (resultCount === 0) return true;
+  return window.confirm(`${action} will discard ${resultCount} generated document${resultCount === 1 ? '' : 's'}. Continue?`);
 }
 
 function getLastBaseResultIndex(items: SolutionResult[]): number {
@@ -445,7 +457,10 @@ export default function App() {
   const [newConfigName, setNewConfigName] = useState<string>('');
   /** True when switching to a heavy markdown document so we can show feedback */
   const [isViewerLoading, setIsViewerLoading] = useState<boolean>(false);
-  const [showCompanionDiagrams, setShowCompanionDiagrams] = useState<boolean>(false);
+  const [requestedDocumentView, setDocumentView] = useState<'main' | 'diagrams' | 'diagnostics'>('main');
+  const documentView = (requestedDocumentView === 'diagrams' && !results[activeIdx]?.diagramsMarkdown)
+    || (requestedDocumentView === 'diagnostics' && !results[activeIdx]?.diagnosticsMarkdown)
+    ? 'main' : requestedDocumentView;
   /** Launch mode selected by the user */
   const [launchMode, setLaunchMode] = useState<LaunchMode | null>(null);
   /** Solutions read from the active Dataverse environment */
@@ -478,6 +493,9 @@ export default function App() {
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const headerExportMenuRef = useRef<HTMLDetailsElement>(null);
   const [batchExportFormat, setBatchExportFormat] = useState<BatchExportFormat | null>(null);
+  const operationCancelledRef = useRef(false);
+  /** Aborts in-flight Dataverse requests and ZIP parsing when the user selects Cancel. */
+  const operationAbortRef = useRef<AbortController | null>(null);
   const invalidArchiveOkRef = useRef<HTMLButtonElement | null>(null);
   const markdownImportRef = useRef<HTMLInputElement | null>(null);
 
@@ -488,6 +506,24 @@ export default function App() {
     scope: documentationScope,
     documentationSettings,
   }), [erdMode, includeDiagrams, includeDefaultColumns, documentationScope, documentationSettings]);
+  const contextRebuildTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => {
+    if (contextRebuildTimer.current !== undefined) {
+      window.clearTimeout(contextRebuildTimer.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const closeExportMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !headerExportMenuRef.current?.open) return;
+      event.preventDefault();
+      headerExportMenuRef.current.open = false;
+      headerExportMenuRef.current.querySelector('summary')?.focus();
+    };
+    document.addEventListener('keydown', closeExportMenuOnEscape);
+    return () => document.removeEventListener('keydown', closeExportMenuOnEscape);
+  }, []);
 
   /**
    * Guard against host click-through on startup opening external links.
@@ -645,7 +681,13 @@ export default function App() {
     const nextDocumentContext = { ...documentContext, [field]: value };
     setSelectedConfigId('custom');
     setDocumentContext(nextDocumentContext);
-    setResults((prev) => rebuildResults(prev, generationPreferences, nextDocumentContext));
+    if (contextRebuildTimer.current !== undefined) {
+      window.clearTimeout(contextRebuildTimer.current);
+    }
+    contextRebuildTimer.current = window.setTimeout(() => {
+      setResults((prev) => rebuildResults(prev, generationPreferences, nextDocumentContext));
+      contextRebuildTimer.current = undefined;
+    }, 300);
   }, [documentContext, generationPreferences]);
 
   const handleSaveConfiguration = useCallback(async () => {
@@ -668,6 +710,10 @@ export default function App() {
     };
 
     const savedConfigs = await readSavedConfigurations();
+    const existingConfig = savedConfigs.find((cfg) => cfg.name.toLowerCase() === name.toLowerCase());
+    if (existingConfig && !window.confirm(`A configuration named "${existingConfig.name}" already exists. Overwrite it?`)) {
+      return;
+    }
     const withoutExistingName = savedConfigs.filter((cfg) => cfg.name.toLowerCase() !== name.toLowerCase());
     const updatedSavedConfigs = [...withoutExistingName, configToSave];
     await writeSavedConfigurations(updatedSavedConfigs);
@@ -686,6 +732,7 @@ export default function App() {
 
     const configToDelete = configurations.find((config) => config.id === configId);
     if (!configToDelete) return;
+    if (!window.confirm(`Delete the saved configuration "${configToDelete.name}"?`)) return;
 
     const updatedHiddenIds = Array.from(new Set([...await readHiddenConfigurationIds(), configId]));
     await writeHiddenConfigurationIds(updatedHiddenIds);
@@ -742,9 +789,11 @@ export default function App() {
   }, [connection, initializeConnection]);
 
   const handleSelectLaunchMode = useCallback((mode: LaunchMode) => {
+    if (!confirmDiscardResults('Changing mode', results.length)) return;
     setLaunchMode(mode);
     setResults([]);
     setActiveIdx(0);
+    setDocumentView('main');
     setProcessing([]);
     setIsProcessing(false);
     setDataverseError('');
@@ -757,12 +806,14 @@ export default function App() {
     if (mode === 'dataverse') {
       void loadDataverseSolutions();
     }
-  }, [loadDataverseSolutions]);
+  }, [loadDataverseSolutions, results.length]);
 
   const handleReturnToModeSelection = useCallback(() => {
+    if (!confirmDiscardResults('Returning to mode selection', results.length)) return;
     setLaunchMode(null);
     setResults([]);
     setActiveIdx(0);
+    setDocumentView('main');
     setProcessing([]);
     setIsProcessing(false);
     setBusySolutionIds([]);
@@ -772,7 +823,7 @@ export default function App() {
     setDropZoneResetToken((prev) => prev + 1);
     setInvalidArchiveMessage(null);
     setStatusMsg('Choose how you want to generate solution documentation.');
-  }, []);
+  }, [results.length]);
 
   /** Open Markdown locally without requiring Electron or host file APIs. */
   const handleMarkdownImport = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
@@ -796,6 +847,7 @@ export default function App() {
         fileName: file.name,
       }]);
       setActiveIdx(results.filter((result) => !result.isConsolidated).length);
+      setDocumentView('main');
       setStatusMsg(`Opened ${file.name}.`);
     } catch {
       setStatusMsg(`Could not open ${file.name}.`);
@@ -824,6 +876,9 @@ export default function App() {
    */
   const handleFilesSelected = useCallback(async (files: File[]) => {
     const sortedFiles = sortFilesByName(files);
+    operationCancelledRef.current = false;
+    const abortController = new AbortController();
+    operationAbortRef.current = abortController;
 
     setIsProcessing(true);
     setStatusMsg(`Processing ${sortedFiles.length} file${sortedFiles.length > 1 ? 's' : ''}…`);
@@ -837,9 +892,17 @@ export default function App() {
 
     const newResults: SolutionResult[] = [];
     const invalidArchiveFiles: string[] = [];
+    let cancelledCount = 0;
 
     for (let i = 0; i < sortedFiles.length; i++) {
       const file = sortedFiles[i];
+      if (operationCancelledRef.current) {
+        cancelledCount = sortedFiles.length - i;
+        for (let pendingIndex = i; pendingIndex < sortedFiles.length; pendingIndex += 1) {
+          updateProcessingEntry(pendingIndex, (entry) => ({ ...entry, error: 'Cancelled before processing.' }));
+        }
+        break;
+      }
 
       try {
         setStatusMsg(`Parsing ${file.name}…`);
@@ -847,23 +910,28 @@ export default function App() {
         const solution = await parseSolutionZip(file, (pct) => {
           // Update progress for this specific file
           updateProcessingEntry(i, (entry) => ({ ...entry, progress: pct }));
-        });
+        }, abortController.signal);
+        if (operationCancelledRef.current) {
+          cancelledCount = sortedFiles.length - i;
+          for (let pendingIndex = i; pendingIndex < sortedFiles.length; pendingIndex += 1) {
+            updateProcessingEntry(pendingIndex, (entry) => ({ ...entry, error: 'Cancelled before processing.' }));
+          }
+          break;
+        }
 
         setStatusMsg(`Generating documentation for ${file.name}…`);
-        const markdown = generateMarkdown(solution, {
-          erdMode,
-          documentContext,
-          includeDiagrams,
-          includeDefaultColumns,
-          scope: documentationScope,
-          documentationSettings,
-        });
-
-        newResults.push({ solution, markdown, fileName: file.name });
+        newResults.push({ solution, markdown: '', fileName: file.name });
 
         // Mark as complete
         updateProcessingEntry(i, (entry) => ({ ...entry, progress: 100 }));
       } catch (err: unknown) {
+        if (isCollectionCancelledError(err)) {
+          cancelledCount = sortedFiles.length - i;
+          for (let pendingIndex = i; pendingIndex < sortedFiles.length; pendingIndex += 1) {
+            updateProcessingEntry(pendingIndex, (entry) => ({ ...entry, progress: 0, error: 'Cancelled before processing.' }));
+          }
+          break;
+        }
         const msg = (err as Error).message ?? 'Unknown error';
         updateProcessingEntry(i, (entry) => ({ ...entry, progress: 0, error: msg }));
         if (isInvalidArchiveError(msg)) {
@@ -874,25 +942,29 @@ export default function App() {
     }
 
     if (newResults.length > 0) {
+      setStatusMsg('Generating documentation for the processed solutions…');
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       const existingBase = results.filter((r) => !r.isConsolidated);
       const mergedBase = [...existingBase, ...newResults];
       const nextResults = buildResultsWithCombinedDocument(mergedBase, generationPreferences, documentContext);
 
       setResults(nextResults);
       setActiveIdx(getLastBaseResultIndex(nextResults));
+      setDocumentView('main');
       const count  = newResults.length;
-      const failed = sortedFiles.length - count;
+      const failed = sortedFiles.length - count - cancelledCount;
       const consolidatedNote = nextResults.some((r) => r.isConsolidated) ? ' A consolidated "All Selected Solutions" document was also created.' : '';
       setStatusMsg(
-        (failed > 0
-          ? `Done: ${count} document${count > 1 ? 's' : ''} generated, ${failed} file${failed > 1 ? 's' : ''} failed.`
-          : `Done: ${count} document${count > 1 ? 's' : ''} generated successfully.`) + consolidatedNote,
+        `${cancelledCount ? 'Cancelled' : 'Done'}: ${count} document${count === 1 ? '' : 's'} generated${failed > 0 ? `, ${failed} file${failed === 1 ? '' : 's'} failed` : ''}${cancelledCount > 0 ? `, ${cancelledCount} file${cancelledCount === 1 ? '' : 's'} not processed` : ''}.${consolidatedNote}`,
       );
     } else {
-      setStatusMsg('No documents generated. Check that the files are valid Power Platform solution ZIPs.');
+      setStatusMsg(cancelledCount > 0
+        ? `Cancelled before any documents were generated; ${cancelledCount} file${cancelledCount === 1 ? '' : 's'} not processed.`
+        : 'No documents generated. Check that the files are valid Power Platform solution ZIPs.');
     }
 
     setIsProcessing(false);
+    operationAbortRef.current = null;
     if (invalidArchiveFiles.length > 0) {
       setInvalidArchiveMessage(
         invalidArchiveFiles.length === 1
@@ -900,16 +972,10 @@ export default function App() {
           : `${invalidArchiveFiles.length} invalid ZIP archives were removed from the selection list.`,
       );
     }
-    // Clear progress indicators after a brief delay
-    setTimeout(() => setProcessing([]), 1500);
+    setProcessing((previous) => previous.filter((entry) => !!entry.error));
   }, [
     results,
-    erdMode,
     documentContext,
-    includeDiagrams,
-    includeDefaultColumns,
-    documentationScope,
-    documentationSettings,
     generationPreferences,
     updateProcessingEntry,
   ]);
@@ -935,74 +1001,116 @@ export default function App() {
     }
 
     setBusySolutionIds(selectedSummaries.map((solution) => solution.solutionId));
+    operationCancelledRef.current = false;
+    const abortController = new AbortController();
+    operationAbortRef.current = abortController;
+    const runWithAbort = <T,>(operation: () => Promise<T>) => withDataverseAbortSignal(abortController.signal, operation);
     setIsProcessing(true);
     setProcessing(selectedSummaries.map((solution) => ({ fileName: solution.displayName, progress: 0 })));
     setStatusMsg(`Reading ${selectedSummaries.length} solution${selectedSummaries.length === 1 ? '' : 's'} from ${activeConnection.name}...`);
 
     try {
       const generatedResults: SolutionResult[] = [];
+      let failedCount = 0;
+      let cancelledCount = 0;
 
       for (let index = 0; index < selectedSummaries.length; index += 1) {
         const summary = selectedSummaries[index];
-
-        const solution = await buildParsedSolutionFromDataverse(summary.solutionId, ({ message, percent }) => {
-          setStatusMsg(message);
-          updateProcessingEntry(index, (entry) => ({ ...entry, progress: percent }));
-        }, dataverseCollectionPolicy);
-
-        const markdown = generateMarkdown(solution, {
-          erdMode,
-          documentContext,
-          includeDiagrams,
-          includeDefaultColumns,
-          scope: documentationScope,
-          documentationSettings,
-        });
-        generatedResults.push({
-          solution,
-          markdown,
-          fileName: `${summary.uniqueName}.dataverse`,
-          dataverseMetadataEnriched: false,
-        });
-
-        updateProcessingEntry(index, (entry) => ({ ...entry, progress: 100 }));
+        if (operationCancelledRef.current) {
+          cancelledCount = selectedSummaries.length - index;
+          for (let pendingIndex = index; pendingIndex < selectedSummaries.length; pendingIndex += 1) {
+            updateProcessingEntry(pendingIndex, (entry) => ({ ...entry, error: 'Cancelled before processing.' }));
+          }
+          break;
+        }
+        try {
+          const solution = await runWithAbort(() => buildParsedSolutionFromDataverse(summary.solutionId, ({ message, percent }) => {
+            setStatusMsg(message);
+            updateProcessingEntry(index, (entry) => ({ ...entry, progress: percent }));
+          }, dataverseCollectionPolicy));
+          if (operationCancelledRef.current) {
+            cancelledCount = selectedSummaries.length - index;
+            for (let pendingIndex = index; pendingIndex < selectedSummaries.length; pendingIndex += 1) {
+              updateProcessingEntry(pendingIndex, (entry) => ({ ...entry, error: 'Cancelled before processing.' }));
+            }
+            break;
+          }
+          generatedResults.push({
+            solution,
+            markdown: '',
+            fileName: `${summary.uniqueName}.dataverse`,
+            dataverseMetadataEnriched: false,
+          });
+          updateProcessingEntry(index, (entry) => ({ ...entry, progress: 100 }));
+        } catch (error) {
+          if (isCollectionCancelledError(error)) {
+            cancelledCount = selectedSummaries.length - index;
+            for (let pendingIndex = index; pendingIndex < selectedSummaries.length; pendingIndex += 1) {
+              updateProcessingEntry(pendingIndex, (entry) => ({ ...entry, progress: 0, error: 'Cancelled before processing.' }));
+            }
+            break;
+          }
+          failedCount += 1;
+          const message = error instanceof Error ? error.message : 'Unable to read this solution.';
+          updateProcessingEntry(index, (entry) => ({ ...entry, error: message }));
+        }
       }
 
-      const existingBase = results.filter((entry) => !entry.isConsolidated);
-      const mergedBase = sortSolutionResults([...existingBase, ...generatedResults]);
+      let environmentAppendixNote = '';
+      if (generatedResults.length > 0 && dataverseCollectionPolicy === 'environmentAppendix' && !operationCancelledRef.current) {
+        try {
+          const environmentAppendix = await runWithAbort(() => collectEnvironmentAppendix(activeConnection, ({ message }) => setStatusMsg(message)));
+          generatedResults[generatedResults.length - 1].environmentAppendix = environmentAppendix;
+          environmentAppendixNote = ' The Environment Appendix is in the "All Selected Solutions" document.';
+        } catch (error) {
+          if (isCollectionCancelledError(error)) {
+            environmentAppendixNote = ' The Environment Appendix was cancelled.';
+          } else {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            environmentAppendixNote = ` The Environment Appendix could not be collected: ${message}`;
+          }
+        }
+      }
 
-      // Connected collection already reads metadata for every selected table.
-      // Do not enumerate the environment again for cross-solution enrichment.
-      const nextResults = buildResultsWithCombinedDocument(mergedBase, generationPreferences, documentContext);
-
-      setResults(nextResults);
-      setActiveIdx(getLastBaseResultIndex(nextResults));
-      setStatusMsg(`Documentation generated for ${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'}.${nextResults.some((entry) => entry.isConsolidated) ? ' A consolidated "All Selected Solutions" document was also created.' : ''}`);
-      await showNotification(
-        'Documentation Ready',
-        `${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'} documented.`,
-        'success',
-        3000,
-      );
+      if (generatedResults.length > 0) {
+        setStatusMsg('Generating documentation for the collected Dataverse solutions…');
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        const hasNewAppendix = generatedResults.some((entry) => entry.environmentAppendix);
+        // Keep only the most recently collected appendix so the consolidated document is never stale.
+        const existingBase = results
+          .filter((entry) => !entry.isConsolidated)
+          .map((entry) => (hasNewAppendix && entry.environmentAppendix ? { ...entry, environmentAppendix: undefined } : entry));
+        const mergedBase = sortSolutionResults([...existingBase, ...generatedResults]);
+        const nextResults = buildResultsWithCombinedDocument(mergedBase, generationPreferences, documentContext);
+        setResults(nextResults);
+        setActiveIdx(getLastBaseResultIndex(nextResults));
+        setDocumentView('main');
+      }
+      setStatusMsg(`${operationCancelledRef.current ? 'Cancelled' : 'Done'}: ${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'} generated${failedCount ? `; ${failedCount} failed` : ''}${cancelledCount ? `; ${cancelledCount} not processed` : ''}.${failedCount || cancelledCount ? ' See the retained errors below.' : ''}${environmentAppendixNote}`);
+      if (generatedResults.length > 0) {
+        await showNotification(
+          'Documentation Ready',
+          `${generatedResults.length} Dataverse solution${generatedResults.length === 1 ? '' : 's'} documented${failedCount ? `; ${failedCount} failed.` : '.'}`,
+          failedCount || cancelledCount ? 'warning' : 'success',
+          3000,
+        );
+      } else if (failedCount === selectedSummaries.length) {
+        await showNotification('Dataverse Read Failed', 'No selected solutions could be documented. See the errors below.', 'error', 4000);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to read the selected solution.';
-      setProcessing((prev) => prev.map((entry) => ({ ...entry, error: message })));
       setStatusMsg(`Failed to generate Dataverse documentation: ${message}`);
       await showNotification('Dataverse Read Failed', message, 'error', 4000);
     } finally {
+      operationAbortRef.current = null;
       setBusySolutionIds([]);
       setIsProcessing(false);
-      setTimeout(() => setProcessing([]), 1500);
+      setProcessing((previous) => previous.filter((entry) => !!entry.error));
     }
   }, [
     connection,
     dataverseSolutions,
     documentContext,
-    erdMode,
-    includeDiagrams,
-    includeDefaultColumns,
-    documentationScope,
-    documentationSettings,
     generationPreferences,
     initializeConnection,
     results,
@@ -1013,7 +1121,11 @@ export default function App() {
 
   const handleDataverseCollectionPolicyChange = useCallback((nextPolicy: SolutionCollectionPolicy) => {
     setDataverseCollectionPolicy(nextPolicy);
-    setStatusMsg(`Dataverse collection policy set to ${nextPolicy}.`);
+    if (nextPolicy === 'environmentAppendix') {
+      setStatusMsg('Dataverse collection policy set to Environment appendix. Solutions are documented solution-only, and environment-wide information is added to the "All Selected Solutions" document.');
+      return;
+    }
+    setStatusMsg(`Dataverse collection policy set to ${nextPolicy === 'solutionOnly' ? 'Solution only' : 'Solution + direct references'}.`);
   }, []);
 
   const handleTogglePublisher = useCallback((publisher: string) => {
@@ -1122,7 +1234,7 @@ export default function App() {
   const handleSelectResult = useCallback((index: number) => {
     const next = results[index];
     if (!next) return;
-    setShowCompanionDiagrams(false);
+    setDocumentView('main');
 
     if (!isLargeOrComplexMarkdown(next.markdown)) {
       setActiveIdx(index);
@@ -1145,7 +1257,7 @@ export default function App() {
     const next = results[resultIndex];
     if (!next?.diagramsMarkdown) return;
     setActiveIdx(resultIndex);
-    setShowCompanionDiagrams(true);
+    setDocumentView('diagrams');
     setIsViewerLoading(isLargeOrComplexMarkdown(next.diagramsMarkdown));
     window.setTimeout(() => setIsViewerLoading(false), 350);
   }, [activeIdx, results]);
@@ -1158,20 +1270,21 @@ export default function App() {
   const handleExport = useCallback(async () => {
     const result = results[activeIdx];
     if (!result) return;
-    const markdown = showCompanionDiagrams ? result.diagramsMarkdown : result.markdown;
+    const markdown = documentView === 'diagrams' ? result.diagramsMarkdown
+      : documentView === 'diagnostics' ? result.diagnosticsMarkdown : result.markdown;
     if (!markdown) return;
     const safeName = toSafeMarkdownBaseName(
       result.solution.metadata.displayName || result.solution.metadata.uniqueName,
       'solution',
     );
     try {
-      await exportMarkdown(markdown, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`);
+      await exportMarkdown(markdown, `${safeName}-${documentView === 'main' ? 'documentation' : documentView}`);
       await showNotification('Export Successful', 'Markdown document exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('Export failed:', error);
       await showNotification('Export Failed', 'Failed to export markdown document.', 'error', 3000);
     }
-  }, [results, activeIdx, showCompanionDiagrams]);
+  }, [results, activeIdx, documentView]);
 
   /**
    * Exports the active solution's rendered documentation as a standalone .html file.
@@ -1184,39 +1297,39 @@ export default function App() {
       'solution',
     );
     try {
-      await exportHtml(html, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`);
+      await exportHtml(html, `${safeName}-${documentView === 'main' ? 'documentation' : documentView}`);
       await showNotification('Export Successful', 'HTML document exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('HTML export failed:', error);
       await showNotification('Export Failed', 'Failed to export HTML document.', 'error', 3000);
     }
-  }, [results, activeIdx, showCompanionDiagrams]);
+  }, [results, activeIdx, documentView]);
 
   const handleExportExcel = useCallback(async () => {
     const result = results[activeIdx];
     if (!result) return;
     const safeName = toSafeMarkdownBaseName(result.solution.metadata.displayName || result.solution.metadata.uniqueName, 'solution');
     try {
-      await exportExcel(result.solution, showCompanionDiagrams ? `${safeName}-diagrams` : `${safeName}-documentation`, documentContext, { generateMissingDependencies: documentationSettings.generateMissingDependencies });
+      await exportExcel(result.solution, `${safeName}-documentation`, documentContext, { generateMissingDependencies: documentationSettings.generateMissingDependencies });
       await showNotification('Export Successful', 'Excel workbook exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('Excel export failed:', error);
       await showNotification('Export Failed', 'Failed to export Excel workbook.', 'error', 3000);
     }
-  }, [results, activeIdx, showCompanionDiagrams, documentContext, documentationSettings.generateMissingDependencies]);
+  }, [results, activeIdx, documentContext, documentationSettings.generateMissingDependencies]);
 
   const handleExportPdf = useCallback(async (markdown: string, renderedTitle: string, diagramImages: ReadonlyArray<string | null>) => {
     const result = results[activeIdx];
     if (!result) return;
-    const safeName = toSafeMarkdownBaseName(renderedTitle, 'solution');
+    const safeName = toSafeMarkdownBaseName(result.solution.metadata.displayName || result.solution.metadata.uniqueName, 'solution');
     try {
-      await exportPdf(markdown, renderedTitle, `${safeName}-documentation`, diagramImages);
+      await exportPdf(markdown, renderedTitle, `${safeName}-${documentView === 'main' ? 'documentation' : documentView}`, diagramImages);
       await showNotification('Export Successful', 'PDF document exported successfully.', 'success', 3000);
     } catch (error) {
       console.error('PDF export failed:', error);
       await showNotification('Export Failed', 'Failed to export PDF document.', 'error', 3000);
     }
-  }, [results, activeIdx]);
+  }, [results, activeIdx, documentView]);
 
   /**
    * Exports the active solution's standalone dependency report.
@@ -1259,6 +1372,9 @@ export default function App() {
         if (result.diagramsMarkdown) {
           zip.file(`${safeName}-diagrams.md`, result.diagramsMarkdown);
         }
+        if (result.diagnosticsMarkdown) {
+          zip.file(`${safeName}-diagnostics.md`, result.diagnosticsMarkdown);
+        }
 
         if (includeDependencyReport && !result.isConsolidated) {
           const reportMarkdown = generateDependencyReportMarkdown(result.solution, { documentContext });
@@ -1290,6 +1406,7 @@ export default function App() {
   const handleExportAllRendered = useCallback(async (format: BatchExportFormat) => {
     if (results.length === 0 || batchExportFormat) return;
     const label = BATCH_EXPORT_LABELS[format];
+    operationCancelledRef.current = false;
     setBatchExportFormat(format);
     try {
       const zip = new JSZip();
@@ -1302,12 +1419,16 @@ export default function App() {
       };
 
       for (const [idx, result] of results.entries()) {
+        if (operationCancelledRef.current) throw new DOMException('Export cancelled.', 'AbortError');
         const title = result.solution.metadata.displayName || result.solution.metadata.uniqueName;
         const safeName = toSafeMarkdownBaseName(title, result.isConsolidated ? 'consolidated' : `solution_${idx + 1}`);
         const baseName = uniqueName(`${safeName}${result.isConsolidated ? '-summary' : '-documentation'}`);
 
         if (format === 'xlsx') {
           zip.file(`${baseName}.xlsx`, createSolutionWorkbook(result.solution, documentContext, { generateMissingDependencies: documentationSettings.generateMissingDependencies }));
+          if (result.diagnosticsMarkdown) {
+            zip.file(`${uniqueName(`${safeName}-diagnostics`)}.md`, result.diagnosticsMarkdown);
+          }
           continue;
         }
 
@@ -1317,8 +1438,12 @@ export default function App() {
         if (result.diagramsMarkdown) {
           documents.push({ name: uniqueName(`${safeName}-diagrams`), title: `${title} - Diagrams`, markdown: result.diagramsMarkdown });
         }
+        if (result.diagnosticsMarkdown) {
+          documents.push({ name: uniqueName(`${safeName}-diagnostics`), title: `${title} - Diagnostics`, markdown: result.diagnosticsMarkdown });
+        }
 
         for (const doc of documents) {
+          if (operationCancelledRef.current) throw new DOMException('Export cancelled.', 'AbortError');
           const rendered = await renderMarkdownDocument(doc.markdown, documentationSettings.diagramColourTheme);
           if (format === 'html') {
             zip.file(`${doc.name}.html`, buildStandaloneHtmlDocument(doc.title, rendered.bodyHtml));
@@ -1332,10 +1457,16 @@ export default function App() {
         }
       }
 
+      if (operationCancelledRef.current) throw new DOMException('Export cancelled.', 'AbortError');
       const blob = await zip.generateAsync({ type: 'blob' });
+      if (operationCancelledRef.current) throw new DOMException('Export cancelled.', 'AbortError');
       await exportZip(blob, `pp-md-pptb-edition-${format}-documents`);
       await showNotification('Export Successful', `All documents exported as ${label} (ZIP).`, 'success', 3000);
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setStatusMsg('Batch export cancelled. No archive was saved.');
+        return;
+      }
       console.error(`Batch ${label} export failed:`, error);
       await showNotification('Export Failed', `Failed to export all documents as ${label}.`, 'error', 3000);
     } finally {
@@ -1370,6 +1501,15 @@ export default function App() {
         if (result.diagramsMarkdown) {
           folder?.file(`${safeName}-diagrams.md`, result.diagramsMarkdown);
         }
+        if (result.diagnosticsMarkdown) {
+          folder?.file(`${safeName}-diagnostics.md`, result.diagnosticsMarkdown);
+        }
+        if (includeDependencyReport && !result.isConsolidated) {
+          folder?.file(
+            `${safeName}-dependency-report.md`,
+            generateDependencyReportMarkdown(result.solution, { documentContext }),
+          );
+        }
       });
 
       const blob = await zip.generateAsync({ type: 'blob' });
@@ -1379,7 +1519,7 @@ export default function App() {
       console.error('Export by category failed:', error);
       await showNotification('Export Failed', 'Failed to export category-grouped documentation.', 'error', 3000);
     }
-  }, [results]);
+  }, [results, includeDependencyReport, documentContext]);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
 
@@ -1387,13 +1527,15 @@ export default function App() {
    * Clears all results and returns to the welcome/drop zone screen.
    */
   const handleReset = useCallback(() => {
+    if (!confirmDiscardResults('Starting a new session', results.length)) return;
     setResults([]);
     setActiveIdx(0);
+    setDocumentView('main');
     setProcessing([]);
     setQueuedLocalFiles([]);
     setDropZoneResetToken((prev) => prev + 1);
     setStatusMsg('');
-  }, []);
+  }, [results.length]);
 
   // ── Derived state ─────────────────────────────────────────────────────────
 
@@ -1487,74 +1629,87 @@ export default function App() {
           </div>
 
           <div className={styles.headerRight}>
-            <button type="button" className={styles.menuToggle} onClick={() => setHeaderMenuOpen((open) => !open)} aria-expanded={headerMenuOpen} aria-controls="header-actions" aria-label="Open toolbar menu">
+            <button type="button" className={styles.menuToggle} onClick={() => setHeaderMenuOpen((open) => !open)} aria-expanded={headerMenuOpen} aria-controls="header-actions" aria-label={headerMenuOpen ? 'Close toolbar menu' : 'Open toolbar menu'}>
               <span aria-hidden="true">☰</span>
             </button>
             <div id="header-actions" className={`${styles.headerActions} ${headerMenuOpen ? styles.headerMenuOpen : ''}`}>
             <div className={styles.headerGroup} role="group" aria-label="Document tools">
-            {!isProcessing && (
               <button
                 type="button"
                 className={styles.headerBtn}
                 onClick={() => markdownImportRef.current?.click()}
+                disabled={isProcessing}
               >
                 Open .MD
               </button>
-            )}
-            {hasResults && !isProcessing && (
+            {hasResults && (
               <button
                 type="button"
                 className={styles.headerBtn}
                 onClick={handleToggleErdMode}
                 aria-label="Toggle ERD detail level"
+                disabled={isProcessing}
               >
                 {erdMode === 'compact' ? 'ERD: Compact' : 'ERD: Detailed'}
               </button>
             )}
 
-            {hasResults && !isProcessing && activeResult?.diagramsMarkdown && (
+            {hasResults && activeResult?.diagramsMarkdown && (
               <button
                 type="button"
-                className={`${styles.headerBtn} ${showCompanionDiagrams ? styles.headerBtnActive : ''}`}
+                className={`${styles.headerBtn} ${documentView === 'diagrams' ? styles.headerBtnActive : ''}`}
                 onClick={() => {
-                  if (showCompanionDiagrams) {
-                    setShowCompanionDiagrams(false);
+                  if (documentView === 'diagrams') {
+                    setDocumentView('main');
                   } else {
                     handleSelectCompanionDiagrams(activeIdx);
                   }
                 }}
-                aria-label={showCompanionDiagrams ? 'View main documentation' : 'View companion diagrams'}
+                aria-label={documentView === 'diagrams' ? 'View main documentation' : 'View companion diagrams'}
+                disabled={isProcessing}
               >
-                {showCompanionDiagrams ? 'Main Document' : 'Companion Diagrams'}
+                {documentView === 'diagrams' ? 'Main Document' : 'Companion Diagrams'}
+              </button>
+            )}
+            {hasResults && activeResult?.diagnosticsMarkdown && (
+              <button
+                type="button"
+                className={`${styles.headerBtn} ${documentView === 'diagnostics' ? styles.headerBtnActive : ''}`}
+                aria-pressed={documentView === 'diagnostics'}
+                onClick={() => { setDocumentView((view) => view === 'diagnostics' ? 'main' : 'diagnostics'); setIsViewerLoading(false); }}
+                disabled={isProcessing}
+              >
+                {documentView === 'diagnostics' ? 'Main Document' : 'Diagnostics'}
               </button>
             )}
             </div>
 
             <div className={`${styles.headerGroup} ${styles.headerExportGroup}`} role="group" aria-label="Documentation exports">
-            {hasResults && !isProcessing && <details ref={headerExportMenuRef} className={styles.headerExportMenu}>
+            {hasResults && <details ref={headerExportMenuRef} className={styles.headerExportMenu}>
               <summary className={`${styles.headerBtn} ${styles.headerExportTrigger}`}>
                 <span className={styles.headerExportLabel}>Export</span>
                 <span className={styles.headerDropdownArrow} aria-hidden="true">▼</span>
               </summary>
               <div className={styles.headerExportPanel}>
-                <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAll(); }}>All Markdown{includeDependencyReport ? ' + Dependencies' : ''}</button>
-                <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportByCategory(); }}>By Category</button>
-                <button type="button" className={styles.menuBtn} disabled={batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('html'); }}>{batchExportFormat === 'html' ? 'Exporting HTML…' : 'All as HTML (ZIP)'}</button>
-                <button type="button" className={styles.menuBtn} disabled={batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('pdf'); }}>{batchExportFormat === 'pdf' ? 'Exporting PDF…' : 'All as PDF (ZIP)'}</button>
-                <button type="button" className={styles.menuBtn} disabled={batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('xlsx'); }}>{batchExportFormat === 'xlsx' ? 'Exporting Excel…' : 'All as Excel (ZIP)'}</button>
-                <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); setIncludeDependencyReport((enabled) => !enabled); }}>{includeDependencyReport ? 'Disable Dependency Reports' : 'Include Dependency Reports'}</button>
-                {includeDependencyReport && <button type="button" className={styles.menuBtn} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportDependencyReport(); }}>Dependency Report</button>}
+                <button type="button" className={styles.menuBtn} disabled={isProcessing} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAll(); }}>All Markdown{includeDependencyReport ? ' + Dependencies' : ''}</button>
+                <button type="button" className={styles.menuBtn} disabled={isProcessing} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportByCategory(); }}>By Category</button>
+                <button type="button" className={styles.menuBtn} disabled={isProcessing || batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('html'); }}>{batchExportFormat === 'html' ? 'Exporting HTML…' : 'All as HTML (ZIP)'}</button>
+                <button type="button" className={styles.menuBtn} disabled={isProcessing || batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('pdf'); }}>{batchExportFormat === 'pdf' ? 'Exporting PDF…' : 'All as PDF (ZIP)'}</button>
+                <button type="button" className={styles.menuBtn} disabled={isProcessing || batchExportFormat !== null} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportAllRendered('xlsx'); }}>{batchExportFormat === 'xlsx' ? 'Exporting Excel…' : 'All as Excel (ZIP)'}</button>
+                <button type="button" className={styles.menuBtn} disabled={isProcessing} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); setIncludeDependencyReport((enabled) => !enabled); }}>{includeDependencyReport ? 'Disable Dependency Reports' : 'Include Dependency Reports'}</button>
+                {includeDependencyReport && <button type="button" className={styles.menuBtn} disabled={isProcessing} onClick={() => { headerExportMenuRef.current?.removeAttribute('open'); void handleExportDependencyReport(); }}>Dependency Report</button>}
               </div>
             </details>}
             </div>
 
             <div className={styles.headerGroup} role="group" aria-label="Session actions">
-            {hasResults && !isProcessing && (
+            {hasResults && (
               <button
                 type="button"
                 className={styles.headerBtn}
                 onClick={handleReset}
                 aria-label="Clear all results and add new files"
+                disabled={isProcessing || batchExportFormat !== null}
               >
                 + New
               </button>
@@ -1571,6 +1726,21 @@ export default function App() {
             )}
             </div>
             </div>
+            {(isProcessing || batchExportFormat !== null) && (
+              <div className={`${styles.headerGroup} ${styles.headerCancelGroup}`} role="group" aria-label="Cancel current operation">
+                <button
+                  type="button"
+                  className={`${styles.headerBtn} ${styles.headerCancelBtn}`}
+                  onClick={() => {
+                    operationCancelledRef.current = true;
+                    operationAbortRef.current?.abort();
+                    setStatusMsg('Cancellation requested. Stopping the current operation…');
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -1597,7 +1767,7 @@ export default function App() {
             activeIndex={activeIdx}
             combinedIndex={combinedResultIndex}
             diagramsAvailable={Boolean(results[combinedResultIndex]?.diagramsMarkdown)}
-            diagramsActive={showCompanionDiagrams}
+            diagramsActive={documentView === 'diagrams'}
             onSelectDiagrams={() => handleSelectCompanionDiagrams(combinedResultIndex)}
             onSelect={handleSelectResult}
             onReset={handleReset}
@@ -1663,6 +1833,7 @@ export default function App() {
                         <img src={githubMark} className={styles.linkIcon} alt="" aria-hidden="true" />
                         <span>GitHub</span>
                       </a>
+                      <UpdateChecker />
                     </div>
                   </section>
                 </>
@@ -1695,7 +1866,7 @@ export default function App() {
                           >
                             <option value="solutionOnly">Solution only</option>
                             <option value="solutionAndDirectReferences">Solution + direct references</option>
-                            <option value="environmentAppendix">Environment appendix</option>
+                            <option value="environmentAppendix">Solution only + environment appendix</option>
                           </select>
                         </div>
                       </div>
@@ -2069,6 +2240,9 @@ export default function App() {
                     ❌ <strong>{e.fileName}</strong>: {e.error}
                   </p>
                 ))}
+              <button type="button" className={styles.errorDismiss} onClick={() => setProcessing([])}>
+                Dismiss errors
+              </button>
             </div>
           )}
 
@@ -2084,13 +2258,15 @@ export default function App() {
                 </div>
               ) : (
                 <MarkdownViewer
-                  markdown={showCompanionDiagrams && activeResult.diagramsMarkdown ? activeResult.diagramsMarkdown : activeResult.markdown}
-                  title={showCompanionDiagrams
+                  markdown={documentView === 'diagrams' && activeResult.diagramsMarkdown ? activeResult.diagramsMarkdown
+                    : documentView === 'diagnostics' && activeResult.diagnosticsMarkdown ? activeResult.diagnosticsMarkdown : activeResult.markdown}
+                  title={documentView === 'diagrams'
                     ? `${activeResult.solution.metadata.displayName || activeResult.solution.metadata.uniqueName}: Diagrams`
+                    : documentView === 'diagnostics' ? `${activeResult.solution.metadata.displayName || activeResult.solution.metadata.uniqueName}: Diagnostics`
                     : activeResult.solution.metadata.displayName || activeResult.solution.metadata.uniqueName}
                   onExport={handleExport}
                   onExportHtml={handleExportHtml}
-                  onExportExcel={handleExportExcel}
+                  onExportExcel={documentView === 'main' ? handleExportExcel : undefined}
                   onExportPdf={handleExportPdf}
                   diagramColourTheme={documentationSettings.diagramColourTheme}
                 />

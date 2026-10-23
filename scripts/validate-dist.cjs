@@ -101,9 +101,9 @@ const versionSurfaces = [
     label: 'release workflow default',
   },
   {
-    path: 'docs/pp-md-feature-parity-plan.md',
-    pattern: new RegExp(`Current Release Status \\(${packageJson.version.replaceAll('.', '\\.')}\\)`),
-    label: 'release status documentation',
+    path: 'CHANGELOG.md',
+    pattern: new RegExp(`^## ${packageJson.version.replaceAll('.', '\\.')}\\b`, 'm'),
+    label: 'changelog release entry',
   },
 ];
 

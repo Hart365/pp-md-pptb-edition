@@ -1,8 +1,9 @@
 import * as XLSX from 'xlsx-js-style';
-import type { ParsedSolution, EntityDefinition } from '../types/solution';
+import type { ParsedSolution, EntityDefinition, EnvironmentAppendix } from '../types/solution';
 import type { DocumentContext } from '../generator/markdownGenerator';
 import { buildTableMetadataBlocks, NOT_AVAILABLE_PREFIX, type MetadataBlock } from '../generator/tableMetadata';
 import { collectMissingDependencies, dependenciesForTable, missingDependenciesNotice, MISSING_DEPENDENCIES_NOTE } from '../generator/missingDependencies';
+import { compareEnvironmentLabels, formatEnvironmentCount, sortEnvironmentAppendix } from '../utils/environmentAppendix';
 
 export interface ExcelExportOptions {
   generateMissingDependencies?: boolean;
@@ -122,7 +123,8 @@ function compareFirstColumn(a: CellValue[], b: CellValue[]): number {
 /** Sorts rows on the first column, keeping any per-row link targets aligned. */
 function sortDefinition(definition: SheetDefinition): SheetDefinition {
   const indexed = definition.rows.map((row, index) => ({ row, target: definition.link?.targets[index] }));
-  indexed.sort((x, y) => compareFirstColumn(x.row, y.row));
+  indexed.sort((x, y) => compareFirstColumn(x.row, y.row)
+    || (definition.name === 'Environment' ? compareEnvironmentLabels(text(x.row[1]), text(y.row[1])) : 0));
   return {
     ...definition,
     rows: indexed.map((entry) => entry.row),
@@ -241,11 +243,11 @@ function makeSheet(definition: SheetDefinition): XLSX.WorkSheet {
     aoa.push([]);
     dependencyTitleRow = aoa.length;
     aoa.push(['Missing Dependencies'], [
-      [MISSING_DEPENDENCIES_NOTE, definition.dependencies.notice].filter(Boolean).join('\n'),
+      MISSING_DEPENDENCIES_NOTE,
     ], definition.dependencies.headers);
     aoa.push(...(definition.dependencies.rows.length > 0
       ? definition.dependencies.rows
-      : [[definition.dependencies.notice ? 'Dependency report incomplete; see the collection notice above.'
+      : [[definition.dependencies.notice ? 'Dependency information is unavailable or incomplete.'
         : 'No missing installation/import prerequisites were declared for this table.']]));
   }
 
@@ -396,9 +398,45 @@ function optionSetSummary(attribute: EntityDefinition['attributes'][number]): st
   return `Local: ${attribute.options.map((option) => `${option.label} (${option.value})`).join(', ')}`;
 }
 
+/**
+ * Flattens the appendix into Section/Item/Value/Custom (confirmed)/Unclassified/Details rows. Only the consolidated
+ * "All Selected Solutions" result carries an appendix, so other workbooks omit this sheet.
+ */
+function environmentAppendixRows(source: EnvironmentAppendix | undefined): CellValue[][] {
+  if (!source) return [];
+  const appendix = sortEnvironmentAppendix(source);
+  const countValue = (count: EnvironmentAppendix['counts'][number]) => (count.value === undefined
+    ? 'Unavailable'
+    : count.isLowerBound ? formatEnvironmentCount(count.value, true) : count.value);
+  const rows: CellValue[][] = [
+    ['Collection', 'Collected At', appendix.collectedAt, ''],
+    ...appendix.identity.map((setting) => ['Identity', setting.name, setting.value, '']),
+    ...appendix.settingGroups.flatMap((group) => group.settings.map((setting) => [`Settings: ${group.title}`, setting.name, setting.value, ''])),
+    ...appendix.powerPlatformSettings.map((setting) => ['Power Platform Settings', setting.name, setting.value, '']),
+    ...appendix.languages.map((language) => ['Languages', language.name, language.lcid, language.isBaseLanguage ? 'Base language' : '']),
+    ...appendix.currencies.map((currency) => ['Currencies', currency.name, currency.isoCode,
+      [currency.isBaseCurrency ? 'Base currency' : '', currency.isActive ? 'Active' : 'Inactive', currency.exchangeRate === undefined ? '' : `Rate ${currency.exchangeRate}`].filter(Boolean).join('; ')]),
+    ...appendix.solutions.map((item) => ['Installed Solutions', item.displayName, item.version,
+      [item.uniqueName, item.isManaged ? 'Managed' : 'Unmanaged', text(item.publisherName)].filter(Boolean).join('; ')]),
+    ...appendix.applicationPackages.map((item) => ['Application Packages', item.name, text(item.version),
+      [text(item.uniqueName), text(item.state), text(item.publisherName)].filter(Boolean).join('; ')]),
+    ...appendix.publishers.map((item) => ['Publishers', item.displayName, item.uniqueName, text(item.customizationPrefix)]),
+    ...appendix.businessUnits.map((unit) => ['Business Units', unit.name, unit.isDisabled ? 'Disabled' : 'Enabled', text(unit.parentName)]),
+  ];
+  return [
+    ...rows.map(([section, item, value, details]) => [section, item, value, '', '', details]),
+    ...appendix.counts.map((count) => [
+      `Counts: ${count.category}`, count.label, countValue(count),
+      count.custom ? count.custom.value ?? 'Unavailable' : 'Not applicable',
+      count.custom ? count.custom.unclassified ?? 'Unavailable' : 'Not applicable',
+      '',
+    ]),
+  ];
+}
+
 function buildSheets(solution: ParsedSolution, documentContext: DocumentContext | undefined, options: ExcelExportOptions): SheetDefinition[] {
   const usedNames = new Set(
-    ['Overview', 'Tables', 'Relationships', 'Processes', 'Apps', 'Integration', 'Security', 'Automation']
+    ['Overview', 'Tables', 'Relationships', 'Processes', 'Apps', 'Integration', 'Security', 'Automation', 'Global Option Sets', 'Solution Components', 'Environment']
       .map((name) => name.toLowerCase()),
   );
 
@@ -421,11 +459,12 @@ function buildSheets(solution: ParsedSolution, documentContext: DocumentContext 
         ['Publisher', solution.metadata.publisherName],
         ['Managed', solution.metadata.isManaged ? 'Yes' : 'No'],
         ['Tables', solution.entities.length],
+        ['Global Option Sets', solution.optionSets.length],
+        ['Additional Solution Components', solution.solutionComponents?.length ?? 0],
         ['Processes', solution.processes.length],
         ['Apps', solution.apps.length],
         ['Environment Variables', solution.environmentVariables.length],
         ['Connection References', solution.connectionReferences.length],
-        ['Warnings', solution.warnings.length],
       ],
     },
     {
@@ -446,6 +485,22 @@ function buildSheets(solution: ParsedSolution, documentContext: DocumentContext 
   ];
 
   const supportingSheets: SheetDefinition[] = [
+    {
+      name: 'Global Option Sets',
+      headers: ['Schema Name', 'Display Name', 'Metadata ID', 'Description', 'Option Label', 'Option Value', 'Colour', 'Option Description'],
+      rows: solution.optionSets.flatMap((choice) => choice.options.length > 0
+        ? choice.options.map((option) => [choice.name, text(choice.displayName), text(choice.metadataId), text(choice.description), option.label, option.value, text(option.color), text(option.description)])
+        : [[choice.name, text(choice.displayName), text(choice.metadataId), text(choice.description), '', '', '', '']]),
+    },
+    {
+      name: 'Solution Components',
+      headers: ['Type', 'Type Code', 'Name', 'Object ID', 'Table', 'Property', 'Value'],
+      rows: [
+        ...(solution.solutionComponents ?? []).flatMap((component) => (component.properties.length > 0 ? component.properties : [{ name: '', value: '' }])
+          .map((property) => [component.componentTypeName, component.componentType, component.name, component.objectId, text(component.entityLogicalName), property.name, property.value])),
+        ...(solution.unmappedComponents ?? []).map((component) => [text(component.componentTypeName) || 'Unknown', component.componentType, '', component.objectId, '', '', '']),
+      ],
+    },
     {
       name: 'Relationships',
       headers: ['Name', 'Type', 'Referenced Table', 'Referencing Table', 'Referencing Column', 'Referenced Column', 'Delete', 'Assign', 'Reparent'],
@@ -493,7 +548,7 @@ function buildSheets(solution: ParsedSolution, documentContext: DocumentContext 
       headers: ['Kind', 'Name', 'Display Name', 'Type', 'Connector', 'Has Current Value', 'Default Value'],
       rows: [
         ...solution.connectionReferences.map((reference) => ['Connection Reference', reference.name, text(reference.displayName), '', text(reference.connectorDisplayName || reference.connectorId), '', '']),
-        ...solution.environmentVariables.map((variable) => ['Environment Variable', variable.schemaName, text(variable.displayName), text(variable.type), '', variable.hasCurrentValue ? 'Yes' : 'No', text(variable.defaultValue)]),
+        ...solution.environmentVariables.map((variable) => ['Environment Variable', variable.schemaName, text(variable.displayName), text(variable.type), '', variable.hasCurrentValue === undefined ? 'Unknown' : variable.hasCurrentValue ? 'Yes' : 'No', text(variable.defaultValue)]),
       ],
     },
     {
@@ -515,6 +570,11 @@ function buildSheets(solution: ParsedSolution, documentContext: DocumentContext 
         ...solution.customApis.map((item) => ['Custom API', item.name, text(item.displayName), text(item.description), item.sourcePath, item.isFunction ? 'Function' : 'Action']),
         ...solution.offlineProfiles.map((item) => ['Offline Profile', item.name, text(item.displayName), text(item.description), item.sourcePath, text(item.profileType)]),
       ],
+    },
+    {
+      name: 'Environment',
+      headers: ['Section', 'Item', 'Value', 'Custom (confirmed)', 'Unclassified', 'Details'],
+      rows: environmentAppendixRows(solution.environmentAppendix),
     },
   ];
 

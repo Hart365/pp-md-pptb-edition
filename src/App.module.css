@@ -52,17 +52,15 @@
 }
 
 .headerInner {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  max-width: 1600px;
-  margin: 0 auto;
   padding: 0.6rem 1.5rem;
   gap: 1rem;
 }
 
 .headerLeft {
-  justify-self: start;
+  flex: 1 1 22rem;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -74,7 +72,13 @@
 }
 
 .headerRight {
-  justify-self: end;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
 }
 
 /* Brand -------------------------------------------------------------------- */
@@ -106,6 +110,7 @@
   letter-spacing: -0.02em;
   margin: 0;
   line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .brandTagline {
@@ -119,7 +124,7 @@
   font-size: 0.9rem;
   color: var(--color-text-secondary);
   font-weight: 500;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* Header actions ----------------------------------------------------------- */
@@ -154,6 +159,8 @@
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius-md);
   background: var(--color-surface-alt);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .headerExportGroup {
@@ -186,6 +193,41 @@
 .headerBtnActive {
   background: var(--color-accent-hover);
   color: var(--color-text-inverse);
+}
+
+.headerGroup.headerCancelGroup {
+  flex: 0 0 auto;
+}
+
+.headerCancelBtn {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.headerCancelBtn:hover,
+.headerCancelBtn:active {
+  background: var(--color-error);
+  color: var(--color-text-inverse);
+}
+
+@media (forced-colors: active) {
+  .headerCancelBtn {
+    background: ButtonFace;
+    color: ButtonText;
+    border-color: ButtonText;
+  }
+
+  .headerCancelBtn:hover,
+  .headerCancelBtn:active {
+    background: Highlight;
+    color: HighlightText;
+    border-color: Highlight;
+  }
+
+  .headerCancelBtn:focus-visible {
+    outline-color: Highlight;
+  }
 }
 
 .headerExportMenu {
@@ -846,13 +888,23 @@
   color: var(--color-error);
 }
 
+.errorDismiss {
+  align-self: flex-start;
+  min-height: 2rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--color-error);
+  border-radius: var(--border-radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
 /* --------------------------------------------------------------------------
    Documentation viewer wrapper
    -------------------------------------------------------------------------- */
 .viewerWrapper {
   flex: 1;
-  height: calc(100vh - 9rem);
-  max-height: calc(100vh - 9rem);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1090,6 +1142,7 @@
     padding: 1rem;
   }
   .headerInner {
+    display: grid;
     grid-template-columns: 1fr;
     gap: 0.65rem;
     padding: 0.5rem 1rem;
@@ -1114,11 +1167,13 @@
   }
   .menuToggle {
     display: inline-flex;
+    align-self: flex-end;
   }
   .headerRight {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
+    margin-left: 0;
     gap: 0.5rem;
   }
   .headerGroup {
@@ -1127,6 +1182,10 @@
   }
   .headerBtn {
     flex: 1 1 auto;
+  }
+  .headerExportPanel {
+    left: 0;
+    right: auto;
   }
   .welcomeHeading {
     font-size: 1.375rem;

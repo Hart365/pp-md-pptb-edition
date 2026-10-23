@@ -59,7 +59,7 @@ export function slugifyHeading(children: ReactNode): string {
  */
 export function buildStandaloneHtmlDocument(title: string, bodyHtml: string): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -133,7 +133,7 @@ export async function svgToPngDataUrl(svgEl: SVGSVGElement): Promise<string | nu
           context.drawImage(image, 0, 0, width, height);
           resolve(canvas.toDataURL('image/png'));
         };
-        image.onerror = () => reject(new Error('Failed to rasterize diagram SVG'));
+        image.onerror = () => reject(new Error('Failed to rasterise diagram SVG'));
         image.src = svgUrl;
       });
       return dataUrl;

@@ -4,40 +4,17 @@
  */
 
 import { useState, useCallback } from 'react';
-import type { ReleaseAsset, Platform, Architecture, InstallType } from '../utils/versionUtils';
-import { compareVersions, findMatchingAsset, getPlatform } from '../utils/versionUtils';
-
-export interface AppInfoResponse {
-  platform: Platform;
-  architecture: Architecture;
-  installType: InstallType;
-}
-
-export interface GitHubReleaseAsset {
-  name: string;
-  browser_download_url: string;
-  size: number;
-}
+import { compareVersions } from '../utils/versionUtils';
+import packageJson from '../../package.json';
 
 export interface GitHubReleaseResponse {
   tag_name: string;
   html_url: string;
   published_at: string;
-  assets?: GitHubReleaseAsset[];
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-export function isAppInfoResponse(value: unknown): value is AppInfoResponse {
-  if (!isObjectRecord(value)) return false;
-
-  return (
-    (value.platform === 'windows' || value.platform === 'linux' || value.platform === 'macos') &&
-    (value.architecture === 'x64' || value.architecture === 'arm64') &&
-    (value.installType === 'installer' || value.installType === 'portable')
-  );
 }
 
 export function isGitHubReleaseResponse(value: unknown): value is GitHubReleaseResponse {
@@ -50,30 +27,11 @@ export function isGitHubReleaseResponse(value: unknown): value is GitHubReleaseR
   );
 }
 
-export function mapReleaseAssets(release: GitHubReleaseResponse): ReleaseAsset[] {
-  if (!Array.isArray(release.assets)) return [];
-
-  return release.assets
-    .filter((asset): asset is GitHubReleaseAsset =>
-      isObjectRecord(asset) &&
-      typeof asset.name === 'string' &&
-      typeof asset.browser_download_url === 'string' &&
-      typeof asset.size === 'number' &&
-      Number.isFinite(asset.size),
-    )
-    .map((asset) => ({
-      name: asset.name,
-      downloadUrl: asset.browser_download_url,
-      size: asset.size,
-    }));
-}
-
 export interface UpdateCheckResult {
   hasUpdate: boolean;
   currentVersion: string;
   latestVersion: string;
   releaseUrl: string;
-  downloadAsset: ReleaseAsset | null;
   releaseDate: string;
 }
 
@@ -100,27 +58,7 @@ export function useUpdateCheck() {
     setState({ checking: true, result: null, error: null });
 
     try {
-      // Get current app version from window (set by Electron)
-      const currentVersion = window.__PPMD_VERSION__ || '1.0.0';
-      
-      // Get current platform/arch info from Electron main process
-      let platform: Platform = getPlatform();
-      let arch: Architecture = 'x64';
-      let installType: InstallType = 'portable';
-
-      // Request info from Electron main process via IPC
-      if (window.electron?.invoke) {
-        try {
-          const info = await window.electron.invoke('get-app-info');
-          if (isAppInfoResponse(info)) {
-            platform = info.platform;
-            arch = info.architecture;
-            installType = info.installType;
-          }
-        } catch (e) {
-          console.warn('Failed to get app info from Electron:', e);
-        }
-      }
+      const currentVersion = packageJson.version;
 
       // Fetch latest release from GitHub
       const response = await fetch(
@@ -156,19 +94,12 @@ export function useUpdateCheck() {
             currentVersion,
             latestVersion,
             releaseUrl: release.html_url,
-            downloadAsset: null,
             releaseDate: release.published_at,
           },
           error: null,
         });
         return;
       }
-
-      // Parse release assets
-      const assets = mapReleaseAssets(release);
-
-      // Find matching asset for current platform/arch
-      const downloadAsset = findMatchingAsset(assets, platform, arch, installType);
 
       setState({
         checking: false,
@@ -177,7 +108,6 @@ export function useUpdateCheck() {
           currentVersion,
           latestVersion,
           releaseUrl: release.html_url,
-          downloadAsset,
           releaseDate: release.published_at,
         },
         error: null,

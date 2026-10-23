@@ -68,12 +68,17 @@ const textChecks = [
   ['color-text-inverse', 'color-accent-hover', 4.5],
   ['color-text-code', 'color-code-bg', 4.5],
   ['color-accent', 'color-bg', 4.5],
+  ['color-error', 'color-error-bg', 4.5],
+  ['color-text-inverse', 'color-error', 4.5],
 ];
 
 const nonTextChecks = [
   ['color-border', 'color-surface', 3.0],
   ['color-border', 'color-bg', 3.0],
   ['color-border-focus', 'color-bg', 3.0],
+  ['color-border-focus', 'color-surface', 3.0],
+  ['color-border-focus', 'color-surface-alt', 3.0],
+  ['color-error', 'color-surface-alt', 3.0],
   ['color-dropzone-border', 'color-dropzone-bg', 3.0],
   ['color-progress-fill', 'color-progress-track', 3.0],
   ['color-sidebar-item-active', 'color-sidebar-bg', 3.0],

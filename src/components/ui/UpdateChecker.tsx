@@ -5,8 +5,8 @@
  */
 
 import { useEffect, useRef, useState, useId } from 'react';
+import { openExternalUrl } from '../../api/toolboxAPI';
 import { useUpdateCheck } from '../../hooks/useUpdateCheck';
-import { formatFileSize } from '../../utils/versionUtils';
 import styles from './UpdateChecker.module.css';
 
 /**
@@ -66,18 +66,17 @@ export function UpdateChecker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDialog]);
 
-  const handleDownload = () => {
-    if (result?.downloadAsset?.downloadUrl) {
-      window.open(result.downloadAsset.downloadUrl, '_blank');
-    } else if (result?.releaseUrl) {
-      window.open(result.releaseUrl, '_blank');
-    }
+  const handleOpenRelease = async () => {
+    if (!result?.releaseUrl) return;
+    const openedInBrowser = await openExternalUrl(result.releaseUrl);
+    if (!openedInBrowser) window.open(result.releaseUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
     <>
       {/* Update Check Button */}
       <button
+        type="button"
         ref={triggerRef}
         className={styles.updateButton}
         onClick={handleCheck}
@@ -138,17 +137,6 @@ export function UpdateChecker() {
                       <div className={styles.updateBanner}>
                         ✓ A new version is available!
                       </div>
-                      {result.downloadAsset && (
-                        <div className={styles.downloadInfo}>
-                          <p>
-                            <strong>File:</strong> {result.downloadAsset.name}
-                          </p>
-                          <p>
-                            <strong>Size:</strong>{' '}
-                            {formatFileSize(result.downloadAsset.size)}
-                          </p>
-                        </div>
-                      )}
                     </div>
                   ) : (
                     <div className={styles.noUpdate}>
@@ -160,12 +148,12 @@ export function UpdateChecker() {
 
               {/* Dialog Buttons */}
               <div className={styles.dialogButtons}>
-                {result && result.hasUpdate && result.downloadAsset && (
+                {result && result.hasUpdate && (
                   <button
                     className={`${styles.button} ${styles.downloadButton}`}
-                    onClick={handleDownload}
+                    onClick={() => { void handleOpenRelease(); }}
                   >
-                    Download Update
+                    Open ToolBox package release
                   </button>
                 )}
                 {result && !result.hasUpdate && (

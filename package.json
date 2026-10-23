@@ -1,6 +1,6 @@
 {
   "name": "@hart365/pp-md-pptb-edition",
-  "version": "1.1.9",
+  "version": "1.2.0",
   "displayName": "PP-MD Power Platform Markdown Document Generator",
   "description": "Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection",
   "author": "Mike Hartley",
@@ -62,7 +62,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
-    "dompurify": "^3.4.17",
     "eslint": "^10.10.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "fast-xml-parser": "^5.11.2",

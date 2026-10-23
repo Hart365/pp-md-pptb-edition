@@ -47,6 +47,29 @@ describe('Excel solution export', () => {
     return XLSX.read(new Uint8Array(await blob.arrayBuffer()), { type: 'array' });
   }
 
+  it('exports global choice options and component inventory without collection errors', async () => {
+    const workbook = await readWorkbook(createSolutionWorkbook({
+      ...solution,
+      optionSets: [{ name: 'new_status', displayName: 'Status', metadataId: 'choice-id', isGlobal: true, options: [{ value: 0, label: 'Inactive' }] }],
+      solutionComponents: [{ componentType: 432, componentTypeName: 'Entity Image Configuration', name: 'Account', objectId: 'image-id', entityLogicalName: 'entityimageconfig', properties: [{ name: 'Primary Image Column', value: 'entityimage' }] }],
+      unmappedComponents: [{ componentType: 999, componentTypeName: 'Unavailable Type', objectId: 'missing-id', error: 'Access denied' }],
+      warnings: ['Parse failed for an optional component'],
+      environmentVariables: [{ name: 'API', schemaName: 'new_API', type: 'String', currentValue: 'DO_NOT_RENDER_CURRENT_VALUE' }],
+    }));
+    expect(workbook.SheetNames).toContain('Global Option Sets');
+    expect(workbook.SheetNames).toContain('Solution Components');
+    const choices = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets['Global Option Sets'], { header: 1 });
+    expect(choices.some((row) => row.includes('new_status') && row.includes('Inactive') && row.includes('choice-id'))).toBe(true);
+    const components = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets['Solution Components'], { header: 1 });
+    expect(components.some((row) => row.includes('Entity Image Configuration') && row.includes('entityimage'))).toBe(true);
+    expect(components.some((row) => row.includes('Unavailable Type') && row.includes('missing-id'))).toBe(true);
+    expect(JSON.stringify(workbook.Sheets)).not.toContain('Access denied');
+    expect(JSON.stringify(workbook.Sheets)).not.toContain('Parse failed for an optional component');
+    const integration = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets.Integration, { header: 1 });
+    expect(integration.some((row) => row.includes('new_API') && row.includes('Unknown'))).toBe(true);
+    expect(JSON.stringify(workbook.Sheets)).not.toContain('DO_NOT_RENDER_CURRENT_VALUE');
+  });
+
   it('creates one worksheet per table instead of a consolidated Columns sheet', async () => {
     const workbook = await readWorkbook(createSolutionWorkbook(withTables));
     expect(workbook.SheetNames).toContain('Tables');
@@ -265,8 +288,8 @@ describe('Excel solution export', () => {
       ...withTables, missingDependenciesError: 'Solution dependency request was denied.',
     }, undefined, { generateMissingDependencies: true }));
     const rows = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets.Zebra, { header: 1 });
-    expect(rows.flat().join(' ')).toContain('Solution dependency request was denied.');
-    expect(rows.flat().join(' ')).toContain('Dependency report incomplete');
+    expect(rows.flat().join(' ')).not.toContain('Solution dependency request was denied.');
+    expect(rows.flat().join(' ')).toContain('Dependency information is unavailable or incomplete.');
     expect(rows.flat().join(' ')).not.toContain('No missing installation/import prerequisites');
   });
 });
@@ -289,5 +312,52 @@ describe('buildTableMetadataBlocks', () => {
     const blocks = buildTableMetadataBlocks({ ...base, metadataSource: 'dataverse', hasNotes: false } as never);
     expect(value(blocks, 'Enable attachments (including notes and files)')).toBe('No');
     expect(value(blocks, 'Audit changes to its data')).toContain('not returned by Dataverse');
+  });
+});
+
+describe('Excel Environment Appendix sheet', () => {
+  const readSheetNames = async (blob: Blob) => XLSX.read(new Uint8Array(await blob.arrayBuffer()), { type: 'array' });
+
+  it('adds a sectioned Environment sheet only when the solution carries an appendix', async () => {
+    expect((await readSheetNames(createSolutionWorkbook(solution))).SheetNames).not.toContain('Environment');
+
+    const workbook = await readSheetNames(createSolutionWorkbook({
+      ...solution,
+      environmentAppendix: {
+        collectedAt: '2025-01-01T00:00:00.000Z',
+        identity: [
+          { name: 'Tenant ID', value: 'tenant-1' }, { name: 'Organization Name', value: 'Contoso' },
+          { name: 'Environment ID', value: 'env-1' }, { name: 'Organization ID', value: 'org-1' },
+        ],
+        settingGroups: [{ title: 'Auditing', settings: [{ name: 'Auditing Enabled', value: 'Yes' }] }],
+        powerPlatformSettings: [],
+        languages: [],
+        currencies: [],
+        counts: [
+          { category: 'People and Security', label: 'Teams', value: 50000, isLowerBound: true },
+          { category: 'Data Model', label: 'Tables', value: 10, note: 'Count collection issue', custom: { value: 3, unclassified: 2, note: 'Classification issue' } },
+        ],
+        solutions: [],
+        publishers: [],
+        businessUnits: [{ name: 'Contoso', isDisabled: false }],
+        applicationPackages: [],
+        warnings: ['Environment collection issue'],
+        powerPlatformStatus: 'Platform collection issue',
+      },
+    }));
+    expect(workbook.SheetNames).toContain('Environment');
+    const rows = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets.Environment, { header: 1 }).map((row) => row.map(String));
+    const flattened = rows.map((row) => row.slice(0, 3).join('|'));
+    expect(flattened).toContain('Identity|Environment ID|env-1');
+    expect(flattened).toContain('Settings: Auditing|Auditing Enabled|Yes');
+    expect(flattened).toContain('Counts: People and Security|Teams|At least 50,000');
+    expect(flattened).toContain('Business Units|Contoso|Enabled');
+    expect(rows[0]).toEqual(['Section', 'Item', 'Value', 'Custom (confirmed)', 'Unclassified', 'Details']);
+    expect(rows.find((row) => row[0] === 'Counts: Data Model')).toEqual(['Counts: Data Model', 'Tables', '10', '3', '2', '']);
+    expect(rows.filter((row) => row[0] === 'Identity').map((row) => row[1])).toEqual([
+      'Environment ID', 'Organisation ID', 'Organisation Name', 'Tenant ID',
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('collection issue');
+    expect(JSON.stringify(rows)).not.toContain('Classification issue');
   });
 });

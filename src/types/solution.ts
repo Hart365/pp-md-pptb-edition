@@ -169,6 +169,8 @@ export interface OptionSetOption {
  * A global or local OptionSet (Choice) definition.
  */
 export interface OptionSetDefinition extends NamedItem {
+  /** Dataverse schema identifier when collected through the metadata API. */
+  metadataId?: string;
   /** Whether the set is global (reusable across entities) */
   isGlobal: boolean;
   /** The individual options */
@@ -179,6 +181,8 @@ export interface OptionSetDefinition extends NamedItem {
  * A column/attribute on a Dataverse table.
  */
 export interface EntityAttribute extends NamedItem {
+  /** Dataverse schema identifier, used to match separately selected column components. */
+  metadataId?: string;
   /** Data type of the column */
   type: AttributeType;
   /** Whether the column is required */
@@ -598,8 +602,10 @@ export interface EnvironmentVariableDefinition extends NamedItem {
   type: string;
   /** Default value defined in the solution */
   defaultValue?: string;
-  /** Whether a value was provided */
-  hasCurrentValue: boolean;
+  /** Whether a non-null current-value record exists; undefined when presence could not be checked. */
+  hasCurrentValue?: boolean;
+  /** Why current-value presence could not be established; undefined presence must not render as No. */
+  currentValueError?: string;
   /** Current/override value (masked if secret) */
   currentValue?: string;
   /** Schema name */
@@ -738,6 +744,120 @@ export interface MissingDependency extends DataverseDependencyEdge {
  */
 export type SolutionCollectionPolicy = 'solutionOnly' | 'solutionAndDirectReferences' | 'environmentAppendix';
 
+/** A single display-safe environment setting (name and formatted value). */
+export interface EnvironmentSetting {
+  name: string;
+  value: string;
+}
+
+/** A titled group of related environment settings, such as Auditing or Regional Formatting. */
+export interface EnvironmentSettingGroup {
+  title: string;
+  settings: EnvironmentSetting[];
+}
+
+/** An environment-wide count. People-related counts never include names. */
+export interface EnvironmentCount {
+  category: string;
+  label: string;
+  /** Undefined when the count could not be read; see {@link EnvironmentCount.note}. */
+  value?: number;
+  /** True only for an established lower bound; an aggregate-limit error does not establish one. */
+  isLowerBound?: boolean;
+  /** Publisher-provenance classification; absent when custom counts do not apply (for example, people). */
+  custom?: {
+    /** Confirmed non-Microsoft, non-default items; undefined when classification could not be read. */
+    value?: number;
+    /** Items whose publisher provenance could not be established; not assumed to be custom or Microsoft. */
+    unclassified?: number;
+    note?: string;
+  };
+  note?: string;
+}
+
+/** A solution installed in the environment, as listed in the Environment Appendix. */
+export interface EnvironmentInstalledSolution {
+  uniqueName: string;
+  displayName: string;
+  version: string;
+  isManaged: boolean;
+  publisherName?: string;
+  /** Publisher identity used for custom inventory classification, not a friendly-name guess. */
+  publisherUniqueName?: string;
+  installedOn?: string;
+}
+
+/** A solution publisher registered in the environment. */
+export interface EnvironmentPublisher {
+  uniqueName: string;
+  displayName: string;
+  customizationPrefix?: string;
+  optionValuePrefix?: number;
+}
+
+/** A provisioned (enabled) user-interface language. */
+export interface EnvironmentLanguage {
+  lcid: number;
+  name: string;
+  isBaseLanguage: boolean;
+}
+
+/** An active or inactive transaction currency. */
+export interface EnvironmentCurrency {
+  isoCode: string;
+  name: string;
+  symbol?: string;
+  precision?: number;
+  exchangeRate?: number;
+  isBaseCurrency: boolean;
+  isActive: boolean;
+}
+
+/** A business unit; names are organizational structure, not personal data. */
+export interface EnvironmentBusinessUnit {
+  name: string;
+  parentName?: string;
+  isDisabled: boolean;
+}
+
+/** A Microsoft or ISV application package installed through Power Platform App Management. */
+export interface EnvironmentApplicationPackage {
+  name: string;
+  uniqueName?: string;
+  version?: string;
+  state?: string;
+  publisherName?: string;
+}
+
+/**
+ * Environment-wide information collected once per Dataverse documentation run when the
+ * Environment Appendix collection policy is selected. Rendered only in the consolidated
+ * "All Selected Solutions" document, never in individual solution documents.
+ *
+ * Privacy: contains no environment-variable values, secrets, record payloads, or named users.
+ */
+export interface EnvironmentAppendix {
+  /** ISO timestamp when collection completed. */
+  collectedAt: string;
+  /** Identity, version, and hosting details (connection, organization, tenant, geo). */
+  identity: EnvironmentSetting[];
+  /** Organization-table settings grouped by administrative area. */
+  settingGroups: EnvironmentSettingGroup[];
+  /** Power Platform API environment-management settings, when the connection allows the API. */
+  powerPlatformSettings: EnvironmentSetting[];
+  /** Explains why Power Platform API data is absent or partial. */
+  powerPlatformStatus?: string;
+  languages: EnvironmentLanguage[];
+  currencies: EnvironmentCurrency[];
+  counts: EnvironmentCount[];
+  solutions: EnvironmentInstalledSolution[];
+  publishers: EnvironmentPublisher[];
+  businessUnits: EnvironmentBusinessUnit[];
+  applicationPackages: EnvironmentApplicationPackage[];
+  /** Per-section collection failures; other sections remain usable. */
+  warnings: string[];
+}
+
 /**
  * Dataverse-only insight payload for advanced documentation sections.
  */
@@ -770,11 +890,32 @@ export interface SolutionMetadata {
   isManaged: boolean;
 }
 
-/**
- * The fully-parsed representation of a Power Platform solution ZIP.
- * This is the central data model passed to the Markdown generator.
- */
+/** A solution-scoped configuration or column component with collected, display-safe metadata. */
+export interface DocumentedSolutionComponent {
+  componentType: number;
+  componentTypeName: string;
+  objectId: string;
+  name: string;
+  /** Metadata-backed record table, or the parent table for a column. */
+  entityLogicalName?: string;
+  /** Selected configuration metadata; never arbitrary record payloads or credentials. */
+  properties: Array<{ name: string; value: string }>;
+}
+
+/** Inventory retained with an explicit reason when a component cannot be documented. */
+export interface UnresolvedSolutionComponent {
+  componentType: number;
+  objectId: string;
+  componentTypeName?: string;
+  error?: string;
+}
+
+/** Normalized ZIP or Dataverse solution model shared by documentation and export generators. */
 export interface ParsedSolution {
+  /** Additional solution-scoped configuration records with metadata-backed type names and properties. */
+  solutionComponents?: DocumentedSolutionComponent[];
+  /** Solution components that are inventoried by Dataverse but not yet fully parsed into a typed section. */
+  unmappedComponents?: UnresolvedSolutionComponent[];
   /** Authoritative per-solution installation/import dependencies, never inferred from runtime metadata. */
   missingDependencies?: MissingDependency[];
   /** An explicit collection failure; do not present an empty dependency list as success. */
@@ -783,6 +924,8 @@ export interface ParsedSolution {
   dependencySolutionUniqueNames?: string[];
   /** Collection policy used when the solution was read. */
   collectionPolicy?: SolutionCollectionPolicy;
+  /** Environment-wide appendix; populated only on the consolidated "All Selected Solutions" model. */
+  environmentAppendix?: EnvironmentAppendix;
   /** Metadata from solution.xml */
   metadata: SolutionMetadata;
   /** Tables / entities */

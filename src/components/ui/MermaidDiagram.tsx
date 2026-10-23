@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useRef, useState, useId, useMemo } from 'react';
+import { LruCache } from '../../utils/lruCache';
 
 const mermaidCfg = {
   startOnLoad: false,
@@ -54,8 +55,10 @@ function scheduleRender<T>(task: () => Promise<T>): Promise<T> {
  * is instant instead of re-running mermaid's layout engine. Stores the
  * original render id so it can be rewritten to each consuming instance's own
  * id, avoiding duplicate DOM ids if the same diagram appears more than once.
+ * Bounded (least recently used) so long sessions cannot grow memory without limit.
  */
-const svgCache = new Map<string, { svg: string; sourceId: string }>();
+const MERMAID_SVG_CACHE_MAX_ENTRIES = 100;
+const svgCache = new LruCache<string, { svg: string; sourceId: string }>(MERMAID_SVG_CACHE_MAX_ENTRIES);
 
 let offscreenRenderCounter = 0;
 

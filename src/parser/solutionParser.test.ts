@@ -59,6 +59,15 @@ describe('readLookupTargets', () => {
         ...dependency, solutionUniqueName: 'sample',
       })));
     });
+
+    it('stops parsing with an AbortError when the signal is already aborted', async () => {
+      const zip = new JSZip();
+      zip.file('solution.xml', xml);
+      const controller = new AbortController();
+      controller.abort();
+      await expect(parseSolutionZip(await zip.generateAsync({ type: 'blob' }), undefined, controller.signal))
+        .rejects.toMatchObject({ name: 'AbortError' });
+    });
   });
 });
 

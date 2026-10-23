@@ -6,13 +6,3 @@
 
 /// <reference types="vite/client" />
 /// <reference types="@pptb/types" />
-
-/**
- * Extend the global window object with app-specific properties.
- */
-interface Window {
-  __PPMD_VERSION__?: string;
-  electron?: {
-    invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
-  };
-}

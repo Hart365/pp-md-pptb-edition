@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { consolidateSolutions, DEFAULT_DOCUMENTATION_SETTINGS, extractDiagramsDocument, generateConsolidatedMarkdown, generateMarkdown, splitMarkdownByCategory } from './markdownGenerator';
-import type { EntityDefinition, ParsedSolution } from '../types/solution';
+import { consolidateSolutions, DEFAULT_DOCUMENTATION_SETTINGS, didPeerGapFillAddData, extractDiagramsDocument, fillSolutionGapsFromPeerSolutions, generateConsolidatedMarkdown, generateMarkdown, splitDiagramsDocument, splitMarkdownByCategory } from './markdownGenerator';
+import { AppType, type EntityDefinition, type ParsedSolution } from '../types/solution';
 
 const emptySolution: ParsedSolution = {
   metadata: { uniqueName: 'sample', displayName: 'Sample', version: '1.0.0.0', publisherName: 'Test', isManaged: false },
@@ -23,6 +23,19 @@ describe('modern artifact Markdown output', () => {
     const row = markdown.split('\n').find((line) => line.includes('new_notes') && line.includes('Line one'));
     expect(row).toBeDefined();
     expect(row).toContain('Line one<br>Line \\| two<br>Line three');
+  });
+
+  it('documents unmapped solution components in the output inventory', () => {
+    const markdown = generateMarkdown({
+      ...emptySolution,
+      unmappedComponents: [{ componentType: 999, objectId: 'component-id' }],
+      warnings: ['Some components are listed by type and ID only.'],
+    });
+
+    expect(markdown).toContain('## Other Solution Components');
+    expect(markdown).toContain('| 999 | Unknown | component-id |');
+    expect(markdown).not.toContain('Some components are listed by type and ID only.');
+    expect(markdown).not.toContain('Collection Issue');
   });
 
   it('documents every modern artifact family with textual state labels', () => {
@@ -89,6 +102,102 @@ describe('modern artifact Markdown output', () => {
   });
 });
 
+describe('peer solution gap filling', () => {
+  it('reports enrichment only when peer data adds information', () => {
+    const target: ParsedSolution = {
+      ...emptySolution,
+      apps: [{ name: 'Sales', uniqueName: 'sales', appType: AppType.ModelDriven, entities: [] }],
+    };
+    const peer: ParsedSolution = {
+      ...emptySolution,
+      apps: [{ name: 'Sales', uniqueName: 'sales', appType: AppType.ModelDriven, entities: ['account'] }],
+    };
+    const unchangedPeer: ParsedSolution = { ...emptySolution };
+    const enriched = fillSolutionGapsFromPeerSolutions(target, [peer]);
+    const unchanged = fillSolutionGapsFromPeerSolutions(target, [unchangedPeer]);
+
+    expect(didPeerGapFillAddData(target, enriched)).toBe(true);
+    expect(didPeerGapFillAddData(target, unchanged)).toBe(false);
+  });
+});
+
+describe('connected component documentation', () => {
+  const source: ParsedSolution = {
+    ...emptySolution,
+    optionSets: [{
+      name: 'new_status', displayName: 'Status', metadataId: 'choice-id', isGlobal: true,
+      options: [{ value: 0, label: 'Inactive', color: '#123456', description: 'Not active' }],
+    }],
+    solutionComponents: [{
+      componentType: 62, componentTypeName: 'Site Map', objectId: 'map-id',
+      name: 'Sales', entityLogicalName: 'sitemap',
+      properties: [{ name: 'Navigation', value: 'Sales\nSales / Accounts (account)' }],
+    }],
+    environmentVariables: [{
+      name: 'API', schemaName: 'new_API', type: 'String', hasCurrentValue: undefined,
+      currentValueError: 'Access denied', currentValue: 'DO_NOT_RENDER_CURRENT_VALUE',
+    }],
+  };
+
+  it('renders complete choice options and component properties with matching TOC and category exports', () => {
+    const markdown = generateMarkdown(source);
+    expect(markdown).toContain('**Component Type:** 9 (Global Option Set)');
+    expect(markdown).toContain('**Metadata ID:** choice-id');
+    expect(markdown).toContain('| Inactive | 0 | #123456 | Not active |');
+    expect(markdown).toContain('[Additional Solution Components](#additional-solution-components)');
+    expect(markdown).toContain('| Component Type | 62 (Site Map) |');
+    expect(markdown).toContain('| Navigation | Sales<br>Sales / Accounts (account) |');
+    expect(markdown).toContain('| String | Unknown |');
+    expect(markdown).not.toContain('DO_NOT_RENDER_CURRENT_VALUE');
+    expect(splitMarkdownByCategory(markdown).find((category) => category.key === 'reports-and-insights')?.markdown).toContain('Site Map: Sales');
+    expect(splitMarkdownByCategory(markdown).find((category) => category.key === 'tables-and-relationships')?.markdown).toContain('new_status');
+  });
+
+  it('adds a top-down Site Map hierarchy while retaining text in main and category documents', () => {
+    const markdown = generateMarkdown(source);
+    expect(markdown).toContain('flowchart TD');
+    expect(markdown).toContain('root["Sales"]');
+    expect(markdown).toContain('nav0["Sales"]');
+    expect(markdown).toContain('nav1["Accounts account"]');
+    expect(markdown).toContain('root --> nav0');
+    expect(markdown).toContain('nav0 --> nav1');
+    expect(markdown).toContain('accTitle: Site Map navigation hierarchy');
+    const split = splitDiagramsDocument(markdown);
+    expect(split.mainMarkdown).toContain('| Navigation | Sales<br>Sales / Accounts (account) |');
+    expect(split.mainMarkdown).toContain('[Additional Solution Components]');
+    expect(split.mainMarkdown).not.toContain('```mermaid');
+    expect(split.mainMarkdown).not.toContain('#### Navigation Hierarchy');
+    expect(split.diagramsMarkdown).toContain('flowchart TD');
+    expect(splitMarkdownByCategory(markdown).find((file) => file.key === 'reports-and-insights')?.markdown).toContain('flowchart TD');
+    expect(generateMarkdown(source, { includeDiagrams: false })).not.toContain('flowchart TD');
+    expect(generateMarkdown(source, { includeDiagrams: false })).toContain('| Navigation |');
+    expect(generateConsolidatedMarkdown([source, source])).toContain('flowchart TD');
+  });
+
+  it('keeps separate branches with repeated labels and deduplicates shared ancestors', () => {
+    const markdown = generateMarkdown({
+      ...source,
+      solutionComponents: [{
+        ...source.solutionComponents![0],
+        properties: [{ name: 'Navigation', value: 'Sales\nSales / Work\nSales / Work / Accounts (account)\nService\nService / Work\nService / Work / Accounts (account)' }],
+      }],
+    });
+    expect(markdown.match(/nav\d+\["Work"\]/g)).toHaveLength(2);
+    expect(markdown.match(/nav\d+\["Accounts account"\]/g)).toHaveLength(2);
+    expect(markdown.match(/nav\d+\["Sales"\]/g)).toHaveLength(1);
+    expect(markdown.match(/nav\d+\["Service"\]/g)).toHaveLength(1);
+  });
+
+  it('retains and deduplicates detailed components and choices in both consolidated output paths', () => {
+    const combined = consolidateSolutions([source, source]);
+    expect(combined.solutionComponents).toHaveLength(1);
+    expect(combined.optionSets).toHaveLength(1);
+    expect(generateMarkdown(combined)).toContain('Site Map: Sales');
+    expect(generateConsolidatedMarkdown([source, source])).toContain('Site Map: Sales');
+    expect(generateConsolidatedMarkdown([source, source])).toContain('**Metadata ID:** choice-id');
+  });
+});
+
 describe('table metadata source labels', () => {
   const entity: EntityDefinition = {
     name: 'new_widget', logicalName: 'new_widget', displayName: 'Widget',
@@ -150,10 +259,11 @@ describe('table metadata source labels', () => {
       expect(markdown).toContain('## Missing Dependencies');
       expect(markdown).toContain('No missing installation/import prerequisites were declared for this solution');
       const unavailable = generateMarkdown(emptySolution, options);
-      expect(unavailable).toContain('have not been collected');
+      expect(unavailable).toContain('Dependency information is unavailable or incomplete.');
       expect(unavailable).not.toContain('No missing installation/import prerequisites');
       const failed = generateMarkdown({ ...emptySolution, missingDependenciesError: 'Access denied' }, options);
-      expect(failed).toContain('Dependency report incomplete: Access denied');
+      expect(failed).not.toContain('Access denied');
+      expect(failed).toContain('Dependency information is unavailable or incomplete.');
       expect(failed).not.toContain('No missing installation/import prerequisites');
     });
 
@@ -232,6 +342,36 @@ describe('consolidated document navigation and companion diagrams', () => {
     expect(companion).toContain('## Table of Contents');
     expect(companion).toContain('```mermaid');
     expect(companion).toContain('[Back to Top](#table-of-contents)');
+  });
+
+  it('splits diagram sections from the main document and removes their table-of-contents links', () => {
+    const markdown = [
+      '# Source',
+      '',
+      '## Table of Contents',
+      '',
+      '- [Overview](#overview)',
+      '- [Entity Relationship Diagram](#entity-relationship-diagram)',
+      '',
+      '## Overview',
+      '',
+      'Solution details.',
+      '',
+      '## Entity Relationship Diagram',
+      '',
+      '```mermaid',
+      'erDiagram',
+      '  ACCOUNT {}',
+      '```',
+    ].join('\n');
+
+    const split = splitDiagramsDocument(markdown, 'Source: Diagrams');
+
+    expect(split.mainMarkdown).toContain('Solution details.');
+    expect(split.mainMarkdown).not.toContain('erDiagram');
+    expect(split.mainMarkdown).not.toContain('[Entity Relationship Diagram]');
+    expect(split.diagramsMarkdown).toContain('erDiagram');
+    expect(split.diagramsMarkdown).toContain('Source: Diagrams');
   });
 
   it('generates internal links whose targets exist as headings', () => {

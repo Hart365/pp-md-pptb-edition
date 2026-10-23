@@ -1,120 +1,96 @@
 # PP-MD - PPTB Edition High-Level Design
 
 ## Overview
-PP-MD - PPTB Edition is a Windows desktop documentation generator for Microsoft Power Platform solutions. The application ingests one or more solution ZIP archives, parses Dataverse and solution metadata, and generates human-readable markdown documentation with Mermaid diagrams.
+
+PP-MD - PPTB Edition is a client-side React and TypeScript tool for generating documentation about Microsoft Power Platform solutions. It supports two input modes:
+
+- **Local Solutions:** the user selects exported solution ZIP files, which the tool parses in its runtime.
+- **Dataverse Connected:** the tool reads selected solution metadata through the active Power Platform ToolBox (PPTB) connection.
+
+The application is packaged as a PPTB tool with a Vite-built web entry point. It is not an Electron desktop application. During development, the same web application can run in a browser through Vite.
 
 ## Goals
-- Convert Power Platform solution content into structured technical documentation.
-- Provide a desktop-first workflow for consultants and delivery teams.
-- Keep generated output portable and editable as markdown.
-- Preserve accessibility and security baselines in the UI/runtime.
 
-## Architectural Style
-- Client-heavy, local-processing architecture.
-- Electron shell hosting a React + TypeScript renderer.
-- In-process parsing and markdown generation pipeline (no backend service).
-- Layered modules:
-  - Presentation layer (React components and CSS modules)
-  - Application orchestration layer (App.tsx)
-  - Domain processing layer (solutionParser.ts, markdownGenerator.ts)
-  - Packaging/runtime layer (Electron main process and build scripts)
+- Produce structured, portable solution documentation.
+- Keep ZIP parsing, normalisation, Markdown generation, rendering, and export in the client runtime.
+- Keep connected collection read-only and scoped to the selected solution and its configured collection policy.
+- Report source and availability differences without presenting environment data as solution content.
+- Avoid querying or outputting credentials and secret configuration values.
 
-## Context Diagram
+## Architecture
+
+The application separates input collection from the shared domain model and output generation. The host supplies platform services when the tool runs inside PPTB; local development uses browser fallbacks where implemented.
+
 ```mermaid
 flowchart LR
-  U[User] --> UI[React UI]
-  UI --> P[Solution Parser]
-  P --> M[ParsedSolution Model]
-  M --> G[Markdown Generator]
-  G --> V[Markdown Viewer]
-  G --> E[Export .md]
-  UI --> FS[Local File Input]
-  UI --> CFG[Doc Config Presets]
-  Electron[Electron Main] --> UI
+  U[User] --> UI[React application]
+  H[PPTB host APIs] --> UI
+  UI --> ZIP[ZIP parser]
+  UI --> DV[Dataverse collector]
+  ZIP --> MODEL[ParsedSolution]
+  DV --> MODEL
+  MODEL --> GEN[Markdown generator]
+  GEN --> VIEW[Markdown viewer]
+  VIEW --> EXP[HTML / PDF / Excel / Markdown / ZIP exports]
+  UI --> PREF[ToolBox settings]
+  UI --> INPUT[Local ZIP / Markdown files]
 ```
 
-## Major Components
+### Host boundary
 
-### Electron Desktop Host
-- main process window creation and lifecycle
-- packaged-vs-dev loading behavior
-- secure renderer defaults (context isolation, sandbox)
-- open external links in default system browser
+Inside PPTB, the tool uses injected host APIs for connection access, Dataverse queries, settings, notifications, clipboard operations, theme information, and file saving. Authentication and connection credentials remain the host's responsibility. In local development, Dataverse-connected features are unavailable without the host; browser-compatible file, clipboard, theme, and local-settings fallbacks are used where supported.
 
-### React Renderer UI
-- drag/drop and browse intake for solution ZIP files
-- processing progress and status feedback
-- multi-solution navigation and selection
-- markdown view, copy, and export actions, including an optional consolidated companion diagrams document
-- theme selection and persistence
+### Application and collectors
 
-### Parsing Engine
-- unzips and reads solution.xml/customizations.xml and related artifacts
-- normalizes varied XML schemas and label formats
-- emits strongly-typed ParsedSolution object
+- `src/App.tsx` coordinates launch mode, input selection, collection, generation, result navigation, configuration, and exports.
+- `src/parser/solutionParser.ts` parses solution ZIP/XML and included artefact files.
+- `src/dataverse/solutionService.ts` collects selected-solution data using PPTB's Dataverse API.
+- Both collectors populate the `ParsedSolution` model in `src/types/solution.ts`.
 
-### Markdown Engine
-- transforms ParsedSolution into sectioned markdown
-- creates inventory tables and process details
-- emits Mermaid ERD and architecture diagrams
-- supports consolidated multi-solution report generation
+### Generation and presentation
 
-### Build and Packaging Pipeline
-- Vite + TypeScript frontend build
-- Electron Builder packaging to portable and installer targets
-- post-build mirroring to latest artifact folders
+- `src/generator/markdownGenerator.ts` generates single-solution and consolidated Markdown, diagrams, and dependency output from the normalised model.
+- `src/components/ui/MarkdownViewer.tsx` renders and searches Markdown, provides raw-source and copy controls, and coordinates document exports.
+- `src/components/ui/MermaidDiagram.tsx` renders diagrams with textual/source fallbacks.
+- Modules under `src/api/` adapt host file saving or browser downloads and create HTML, PDF, and Excel output.
 
 ## Data Flow
-1. User selects one or more .zip files in the drop zone.
-2. App orchestrator loops each file through parseSolutionZip.
-3. ParsedSolution objects are passed to generateMarkdown.
-4. Generated markdown is displayed in MarkdownViewer.
-5. User exports one or more markdown files to local storage.
-6. Optional consolidated markdown is generated across all loaded solutions; when selected, diagrams are emitted into a separate navigable document.
 
-## Technology Stack
-- Runtime shell: Electron
-- Frontend: React 18 + TypeScript + Vite
-- Parsing: JSZip + fast-xml-parser
-- Rendering: react-markdown + remark-gfm + Mermaid
-- Packaging: electron-builder + PowerShell automation
+1. The user chooses ZIP input or selects a solution from the active PPTB Dataverse connection.
+2. The corresponding collector parses or retrieves data and normalises it into `ParsedSolution`.
+3. The generator creates solution documentation and, when enabled, consolidated output and companion diagrams.
+4. The viewer renders the generated content and exposes navigation, search, and export controls.
+5. Exports are saved through PPTB's file-system bridge in the host or browser download fallbacks during local development.
 
-## Security and Safety Posture
-- Local-only processing of source ZIPs (no server upload path).
-- CSP in index.html with restricted default sources.
-- Electron security options enabled: contextIsolation and sandbox.
-- External links blocked from opening new in-app windows.
-- XML parser configured to avoid entity-expansion style attacks.
+Connected collection uses the selected-solution component inventory by default. Optional direct-reference or environment-appendix collection is separately identified in the UI and output; availability depends on the host connection and Dataverse permissions. See [the codebase guide](codebase-guide.md) and [the Dataverse retrieval reference](research/dataverse-retrieval-reference.md).
 
-## Accessibility Baseline
-- Keyboard-accessible controls and navigation landmarks.
-- ARIA status/progress announcements.
-- Contrast token checks enforced by script during build.
-- Diagram source fallback to support non-visual consumption.
+## Technology and Build
 
-## Deployment View
-```mermaid
-flowchart TD
-  SRC[TypeScript/React Source] --> BUILD[npm run build]
-  BUILD --> DIST[dist/ assets]
-  DIST --> PKG[electron-builder]
-  PKG --> PORT[Portable EXE]
-  PKG --> NSIS[Installer EXE]
-  PORT --> LATESTP[release_latest_portable]
-  NSIS --> LATESTI[release_latest_installer]
-  DIST --> LATESTAPP[release_latest]
-```
+- React 19, TypeScript, and Vite
+- JSZip and fast-xml-parser for solution ZIP/XML parsing
+- `react-markdown`, `remark-gfm`, and Mermaid for rendering and diagrams
+- jsPDF and `xlsx-js-style` for PDF and Excel generation
+- PPTB manifest entry point: `index.html`
 
-## Operational Modes
-- Development mode:
-  - Vite dev server + Electron shell (desktop:dev)
-  - detached dev tools enabled
-- Packaged mode:
-  - loads static dist/index.html
-  - displays fatal load/crash error dialogs when needed
+`npm run build` runs TypeScript compilation, the Vite build, and the distribution-asset normalisation script. The manifest packages `dist`, `LICENSE`, and `README.md`. The tool does not include an Electron main process or Electron packaging targets. For the exact commands, see [package.json](../package.json) and [the codebase guide](codebase-guide.md).
+
+## Security and Privacy
+
+- Local ZIP processing is performed by the client-side tool; the repository does not implement a server upload path.
+- Dataverse Connected mode makes read-only requests through the active PPTB connection; it is not offline processing.
+- The tool does not intentionally query or render credentials, secure plug-in configuration, or live environment-variable values. Current-value reporting checks for non-null records without selecting their values and reports unknown when access or lookup resolution fails.
+- Markdown and HTML rendering use sanitisation; output files are generated in the client runtime and saved by the host or browser.
+- The page declares a Content Security Policy in `index.html`; the manifest separately declares the optional GitHub connection used by the update check.
+
+These statements describe repository behaviour and do not imply that every host environment, connection permission, or export path has been independently security-tested.
+
+## Accessibility
+
+The UI includes semantic landmarks, keyboard-operable controls, status announcements, visible focus styles, reduced-motion support, and diagram text/source fallbacks. `npm test` includes the theme-token contrast audit. This is not a claim of WCAG conformance: screen-reader combinations, forced colours, zoom/reflow, and final behaviour inside PPTB still require host-level validation. See [the codebase guide](codebase-guide.md#accessibility-behaviour).
 
 ## Constraints and Assumptions
-- Input format depends on Microsoft solution ZIP structure.
-- Parsing logic includes defensive fallbacks due to XML shape variability.
-- Diagram richness can increase markdown rendering cost on very large solutions.
-- Windows-focused packaging pipeline and output naming conventions.
+
+- ZIP coverage depends on the contents and shape of the exported solution files.
+- Connected collection depends on the active host connection, permissions, and the availability of Dataverse endpoints or artefact types.
+- The repository's automated tests do not reproduce the full PPTB host, so host-specific behaviour must be validated there.
+- Large solutions can increase parsing, rendering, diagram, and export work; the application uses progress feedback and diagram rendering strategies to manage this workload.

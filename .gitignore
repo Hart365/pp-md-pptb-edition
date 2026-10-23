@@ -11,6 +11,10 @@ node_modules
 dist
 dist-ssr
 *.local
+*.tsbuildinfo
+
+# Generated sample exports
+samples/out/
 
 # Editor directories and files
 .vscode/*

@@ -1,18 +1,20 @@
 import type { MissingDependency, ParsedSolution } from '../types/solution';
+import { solutionComponentTypeName } from '../dataverse/componentTypes';
 
 export const MISSING_DEPENDENCIES_NOTE = 'These are installation/import prerequisites declared for components in this solution but not packaged in that solution. Results come only from the solution ZIP MissingDependencies manifest or the solution-specific Dataverse RetrieveMissingDependencies response, not inferred runtime references. They may already exist in the target environment.';
 
 const normalize = (value: string) => value.trim().replace(/^\{|\}$/g, '').toLowerCase();
 
 export function dependencyComponentType(type: number): string {
-  const types: Record<number, string> = {
+  const dependencyLabels: Record<number, string> = {
     1: 'Table', 2: 'Column', 9: 'Global Option Set', 10: 'Relationship',
-    20: 'Security Role', 24: 'Form', 26: 'View', 29: 'Process', 31: 'Report', 36: 'Email Template',
-    60: 'Form', 61: 'Web Resource', 80: 'App', 90: 'Plugin Type', 91: 'Plugin Assembly',
-    92: 'Plugin Step', 161: 'Offline Profile', 300: 'App',
-    371: 'Connector', 372: 'Connector', 380: 'Environment Variable', 10039: 'Connection Reference',
+    20: 'Security Role', 24: 'Form', 26: 'View', 29: 'Process', 31: 'Report',
+    36: 'Email Template', 60: 'Form', 61: 'Web Resource', 80: 'App',
+    90: 'Plugin Type', 91: 'Plugin Assembly', 92: 'Plugin Step',
+    161: 'Offline Profile', 300: 'App', 371: 'Connector', 372: 'Connector',
+    380: 'Environment Variable', 10039: 'Connection Reference',
   };
-  return types[type] ?? `Component ${type}`;
+  return dependencyLabels[type] ?? solutionComponentTypeName(type);
 }
 
 export function missingDependenciesNotice(solution: ParsedSolution): string | undefined {
