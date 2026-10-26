@@ -2,6 +2,12 @@
 
 This file records release highlights. For complete details, use the repository history and release information.
 
+## 1.2.1 - 2026-10-26
+
+- Replace regex-based build HTML rewriting with quote-aware, comment-aware tag and attribute parsing to address two High Code Scanning alerts.
+- Handle whitespace in script closing tags while preserving PPTB's classic-script loading and local-resource attribute requirements.
+- Add regression tests for script relocation, comments, and attribute handling.
+
 ## 1.2.0 - 2026-10-23
 
 - Standardise documentation and displayed Dataverse/environment parameter labels on UK English, preserving technical identifiers and source values.
