@@ -1,0 +1,33 @@
+name: Feature or improvement
+description: Have an idea that would make PP-MD more useful? Tell me about it.
+title: "[Idea]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Good ideas often start with a task that's harder than it needs to be.
+        Check existing Issues if you can, but don't worry about arriving with a technical solution.
+        This is public, so use made-up examples rather than customer files or sensitive information.
+        If an existing feature isn't accessible to you, the Accessibility barrier form is there for that too.
+  - type: textarea
+    id: need
+    attributes:
+      label: What are you trying to achieve?
+      description: Describe the task, who's affected, and what's difficult or missing today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would make it better?
+      description: Tell me your idea and what a useful result would look like. It's OK if you're not sure how it should work yet.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do at the moment?
+      description: Any workarounds or alternatives you've tried, and where they fall short.
+  - type: textarea
+    id: considerations
+    attributes:
+      label: Anything else to consider?
+      description: For example, Accessibility needs, Local Solutions or connected-mode behaviour, export formats, or safe examples. No personal disclosure required.

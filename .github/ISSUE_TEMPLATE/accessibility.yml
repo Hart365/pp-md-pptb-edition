@@ -1,0 +1,39 @@
+name: Accessibility barrier
+description: Tell me what's getting in your way. No Accessibility expertise needed.
+title: "[Accessibility]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make PP-MD more usable. Your experience matters more than technical terminology.
+        Only the description of the barrier is required. Share as much or as little of the rest as you can.
+        This report will be public. Don't include customer solution files, sensitive metadata, credentials, personal information, or unredacted screenshots.
+        You don't need to share a diagnosis or explain your disability.
+        See the [Accessibility statement](https://github.com/Hart365/pp-md-pptb-edition/blob/main/ACCESSIBILITY.MD) for limitations and an alternative contact route.
+  - type: textarea
+    id: barrier
+    attributes:
+      label: What's getting in your way?
+      description: What were you trying to do, what happened, and what did you need to happen instead? Plain language is absolutely fine.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can I find the problem?
+      description: If you can, describe the steps and the screen, control, document, or export involved. It's OK if you can't reproduce it every time.
+  - type: textarea
+    id: impact
+    attributes:
+      label: How does this affect your task?
+      description: Does it stop you completing the task, make it harder, or require help? If you've found a workaround, let me know.
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup (if known)
+      description: PP-MD version, PPTB version or local browser, operating system, and Local Solutions or Dataverse Connected mode. Include assistive technology, theme, zoom, or input method only if relevant and you're comfortable sharing.
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else that would help?
+      description: Optional safe examples, text descriptions, or redacted screenshots. A screenshot or recording is not required. Add a WCAG reference only if you already know it.

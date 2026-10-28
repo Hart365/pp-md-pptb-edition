@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/Hart365/pp-md-pptb-edition/blob/main/SECURITY.md
+    about: Please follow the Security policy rather than posting a vulnerability in a public Issue.
+  - name: Accessibility guidance and alternative contact
+    url: https://github.com/Hart365/pp-md-pptb-edition/blob/main/ACCESSIBILITY.MD
+    about: Known limitations, how to report a barrier, and how to get in touch if GitHub isn't usable for you.

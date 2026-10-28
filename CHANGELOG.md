@@ -2,6 +2,14 @@
 
 This file records release highlights. For complete details, use the repository history and release information.
 
+## 1.2.2 - 2026-10-28
+
+- Add an Accessibility commitment covering the WCAG 2.2 AA target, known limitations, verification gaps, and ways to report barriers.
+- Add GitHub Issue forms for Accessibility barriers, bugs, and improvement ideas, plus a Pull Request template and a concise Code of Conduct.
+- Expand contributor guidance with practical Accessibility checks and link the community documents from the README.
+- Add interface screenshots and include them alongside the community documents in the npm package.
+- Refresh locked development and bundled library dependencies.
+
 ## 1.2.1 - 2026-10-26
 
 - Replace regex-based build HTML rewriting with quote-aware, comment-aware tag and attribute parsing to address two High Code Scanning alerts.

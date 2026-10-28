@@ -1,0 +1,49 @@
+name: Bug report
+description: Something isn't working as expected? Let's work out what's happening.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Check existing Issues if you can; if you find the same problem, add your details there.
+        This report will be public. Don't attach customer solution ZIPs, sensitive generated documents, credentials, tokens, or personal data.
+        For a suspected security vulnerability, use the [Security policy](https://github.com/Hart365/pp-md-pptb-edition/blob/main/SECURITY.md), not a public Issue.
+        For an access barrier, you can also use the dedicated Accessibility barrier form.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What went wrong?
+      description: Tell me what you expected and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can I reproduce it?
+      description: Describe the steps, including the screen or export involved. If it's intermittent or you're not sure, say so.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PP-MD version
+      description: Shown in the app header. If you can't find it, enter "Not sure".
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode were you using?
+      options:
+        - Local Solutions (ZIP files)
+        - Dataverse Connected
+        - Both
+        - Not sure / not applicable
+  - type: textarea
+    id: setup
+    attributes:
+      label: Where were you running it?
+      description: PPTB version and operating system, or browser and version for local development. Include theme or assistive technology only if relevant.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Anything else that helps?
+      description: Task impact, a workaround, a small made-up example, or redacted error text or screenshots. Please check attachments for sensitive information before posting.

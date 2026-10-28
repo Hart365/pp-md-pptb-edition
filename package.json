@@ -1,6 +1,6 @@
 {
   "name": "@hart365/pp-md-pptb-edition",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "displayName": "PP-MD Power Platform Markdown Document Generator",
   "description": "Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection",
   "author": "Mike Hartley",
@@ -35,7 +35,14 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "ACCESSIBILITY.MD",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/PP-MD-PPTB-Edition-HomePage.png",
+    "docs/PP-MD-PPTB-Edition-DocHeader.png",
+    "docs/PP-MD-PPTB-Edition-DocGeneration.png"
   ],
   "scripts": {
     "dev": "vite",

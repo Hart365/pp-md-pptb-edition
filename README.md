@@ -1,5 +1,7 @@
 # PP-MD Power Platform Markdown Document Generator
 
+<img src="docs/PP-MD-PPTB-Edition-HomePage.png" alt="The PP-MD PPTB Edition welcome page showing the buttons to do either Local or Dataverse Connected document generation" width="400" height="300">
+
 PP-MD generates structured Markdown documentation for Microsoft Power Platform solutions in two modes:
 
 - Local Solutions mode (upload one or more solution ZIP files)
@@ -10,7 +12,6 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 ### Input and solution scope
 
 - Process exported Power Platform solution ZIP files entirely in the local tool runtime; ZIP data is not uploaded by this tool. Dataverse Connected mode reads selected solution metadata through the active ToolBox connection.
-- The app header shows the running version (`PP-MD - PPTB Edition v#.#.#`), and the **Generate Selected** button stays pinned to the bottom-right of the solution selection page.
 - Browse, search, sort, filter, refresh, and multi-select solutions from the active Power Platform ToolBox Dataverse connection.
 - Filter connected solutions by publisher and managed or unmanaged status.
 - Keep connected collection read-only and scoped to the selected solution components through `solutioncomponent` records.
@@ -38,7 +39,6 @@ PP-MD generates structured Markdown documentation for Microsoft Power Platform s
 - Save reusable configuration presets through ToolBox settings with a local-development fallback.
 - View sanitised GitHub Flavored Markdown as rendered content or raw source.
 - Import existing Markdown, search within rendered documents, copy Markdown, and follow generated table-of-contents and Back to Top links.
-- Keep the logo and name left-aligned and actions right-aligned across the full window width. Wrap header controls below the app title when space is limited, and keep viewer controls visible above the independently scrolling document.
 - Keep parse warnings, collection errors, and issues in a separate **Diagnostics** document, available from the header when diagnostics exist. Solution documentation and Excel workbooks retain inventory and unknown/unavailable states without embedding diagnostic messages.
 - Render Mermaid diagrams lazily, then pre-render the rest in the background (top-down, low priority, paused while scrolling, visible diagrams first), cache completed SVG output in a bounded least-recently-used cache (100 diagrams), and force outstanding diagrams to finish before PDF generation.
 - Yield during large PDF drawing operations so status updates can paint and the interface remains responsive where possible.
@@ -71,7 +71,7 @@ This README is aligned to metadata in package.json used by Power Platform ToolBo
 | --- | --- |
 | name | @hart365/pp-md-pptb-edition |
 | displayName | PP-MD Power Platform Markdown Document Generator |
-| version | 1.2.1 |
+| version | 1.2.2 |
 | description | Generate Power Platform documentation from either Solution ZIP files or direct Dataverse connection |
 | icon | icons/pp-md.svg |
 | configurations.repository | https://github.com/Hart365/pp-md-pptb-edition |
@@ -258,6 +258,8 @@ The package intentionally declares `api.github.com` as an optional CSP connectio
 - [PPTB platform reference](docs/research/pptb-platform-reference.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
+- [Accessibility commitment, limitations, and reporting barriers](ACCESSIBILITY.MD)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security policy](SECURITY.md)
 
 ## Support
@@ -265,6 +267,8 @@ The package intentionally declares `api.github.com` as an optional CSP connectio
 - Repository: https://github.com/Hart365/pp-md-pptb-edition
 - Issues: https://github.com/Hart365/pp-md-pptb-edition/issues
 - Website: https://github.com/Hart365/pp-md-pptb-edition
+
+Found something getting in your way? [Report an Accessibility barrier](https://github.com/Hart365/pp-md-pptb-edition/issues/new?template=accessibility.yml). You don't need technical terminology or a proposed fix. The [Accessibility statement](ACCESSIBILITY.MD) also explains the current limitations and how to contact me if GitHub isn't usable for you.
 
 ## AI Assistance
 
